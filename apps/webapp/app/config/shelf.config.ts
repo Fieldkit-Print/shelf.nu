@@ -16,7 +16,8 @@ export const config: Config = {
   sendOnboardingEmail: false,
   enablePremiumFeatures: ENABLE_PREMIUM_FEATURES || false,
   freeTrialDays: Number(FREE_TRIAL_DAYS || 7),
-  disableSignup: DISABLE_SIGNUP || false,
+  // Fieldkit: signup is hardcoded off. Users join only via admin invite.
+  disableSignup: true,
   disableSSO: DISABLE_SSO || false,
 
   logoPath: {
