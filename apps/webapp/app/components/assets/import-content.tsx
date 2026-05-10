@@ -66,8 +66,8 @@ export const ImportContent = () => {
           variant="link"
           to={
             canUseBarcodes
-              ? "/static/shelf.nu-example-asset-import-from-content-with-barcodes.csv"
-              : "/static/shelf.nu-example-asset-import-from-content.csv"
+              ? "/static/fieldkit-example-asset-import-from-content-with-barcodes.csv"
+              : "/static/fieldkit-example-asset-import-from-content.csv"
           }
           target="_blank"
           download

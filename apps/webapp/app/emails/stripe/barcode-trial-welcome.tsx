@@ -27,6 +27,9 @@ export const sendBarcodeTrialWelcomeEmail = async ({
   email,
   hasPaymentMethod,
 }: BarcodeTrialWelcomeProps) => {
+  // Fieldkit: disabled. Barcode addon trial is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = "Your 7-day Barcodes trial is now active!";
     const html = await barcodeTrialWelcomeEmailHtml({

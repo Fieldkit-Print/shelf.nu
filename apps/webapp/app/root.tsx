@@ -47,8 +47,8 @@ export const handle = {
 
 export const links: LinksFunction = () => [
   { rel: "manifest", href: "/static/manifest.json" },
-  { rel: "apple-touch-icon", href: config.faviconPath },
-  { rel: "icon", href: config.faviconPath },
+  { rel: "apple-touch-icon", href: "/static/images/fieldkit-logo-x512.png" },
+  { rel: "icon", type: "image/svg+xml", href: config.faviconPath },
   ...splashScreenLinks,
   { rel: "stylesheet", href: styles },
   { rel: "stylesheet", href: fontsStylesheetUrl },
@@ -60,7 +60,7 @@ export const links: LinksFunction = () => [
 
 export const meta: MetaFunction = () => [
   {
-    title: "shelf.nu",
+    title: "Fieldkit",
   },
 ];
 
@@ -152,10 +152,6 @@ function App() {
       content={
         "Apologies, we’re down for scheduled maintenance. Please try again later."
       }
-      cta={{
-        to: "https://www.shelf.nu/blog-categories/updates-maintenance",
-        text: "Learn more",
-      }}
       icon="tool"
     />
   ) : (

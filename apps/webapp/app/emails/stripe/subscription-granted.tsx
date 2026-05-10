@@ -30,6 +30,9 @@ export const sendSubscriptionGrantedEmail = async ({
   subscriptionName,
   email,
 }: SendSubscriptionGrantedEmailProps) => {
+  // Fieldkit: disabled. Stripe billing is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = "Your Shelf subscription is now active";
     const html = await subscriptionGrantedHtml({

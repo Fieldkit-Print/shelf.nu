@@ -84,7 +84,8 @@ describe("sendBarcodeTrialEndsSoonEmail", () => {
     vi.clearAllMocks();
   });
 
-  it("calls sendEmail with correct params", async () => {
+  // Fieldkit: send is disabled in this deployment; assert no-op.
+  it("does not send (Fieldkit disable)", async () => {
     await sendBarcodeTrialEndsSoonEmail({
       firstName: "Alice",
       email: "alice@example.com",
@@ -92,13 +93,7 @@ describe("sendBarcodeTrialEndsSoonEmail", () => {
       trialEndDate: new Date("2026-03-24T00:00:00Z"),
     });
 
-    expect(mockSendEmail).toHaveBeenCalledOnce();
-    expect(mockSendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "alice@example.com",
-        subject: "Your Barcodes trial ends in 3 days — auto-charge reminder",
-      })
-    );
+    expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   it("does not throw when sendEmail fails", async () => {

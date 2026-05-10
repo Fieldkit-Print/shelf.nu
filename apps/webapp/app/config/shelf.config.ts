@@ -11,18 +11,20 @@ import {
 import { Config } from "./types";
 
 export const config: Config = {
-  sendOnboardingEmail: SEND_ONBOARDING_EMAIL || false,
+  // Fieldkit: onboarding email is hardcoded off. The upstream Shelf onboarding
+  // copy is a founder note from Carlos Virreira that does not apply to Fieldkit.
+  sendOnboardingEmail: false,
   enablePremiumFeatures: ENABLE_PREMIUM_FEATURES || false,
   freeTrialDays: Number(FREE_TRIAL_DAYS || 7),
   disableSignup: DISABLE_SIGNUP || false,
   disableSSO: DISABLE_SSO || false,
 
   logoPath: {
-    fullLogo: "/static/images/logo-full-color(x2).png",
-    symbol: "/static/images/shelf-symbol.png",
+    fullLogo: "/static/images/fieldkit-word-light.svg",
+    symbol: "/static/images/fieldkit-symbol.png",
   },
-  faviconPath: "/static/favicon.ico",
-  emailPrimaryColor: "#EF6820",
+  faviconPath: "/static/images/fieldkit-favicon.svg",
+  emailPrimaryColor: "#00ac4e",
   showHowDidYouFindUs: SHOW_HOW_DID_YOU_FIND_US || false,
   collectBusinessIntel:
     COLLECT_BUSINESS_INTEL || SHOW_HOW_DID_YOU_FIND_US || false,

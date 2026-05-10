@@ -369,8 +369,8 @@ function EmailPreview({
               }}
             >
               <img
-                src="/static/images/logo-full-color(x2).png"
-                alt="Shelf logo"
+                src="/static/images/fieldkit-word-light.svg"
+                alt="Fieldkit logo"
                 style={{ height: "32px", width: "auto" }}
               />
             </div>

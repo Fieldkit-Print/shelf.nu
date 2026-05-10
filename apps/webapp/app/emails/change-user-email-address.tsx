@@ -24,7 +24,7 @@ Don't share this OTP with anyone. Our customer service team will never ask you f
 This code will expire in 1 hour. If you have not requested this change, please ignore the email and contact support immediately.
 
 Kind regards,
-the Shelf team`;
+the Fieldkit team`;
 
 function ChangeEmailAddressHtmlEmailTemplate({
   otp,
@@ -66,7 +66,7 @@ function ChangeEmailAddressHtmlEmailTemplate({
             <br />
             Kind regards,
             <br />
-            the Shelf team
+            the Fieldkit team
           </Text>
         </div>
       </Container>

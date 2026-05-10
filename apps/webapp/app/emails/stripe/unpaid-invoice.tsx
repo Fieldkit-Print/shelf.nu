@@ -72,6 +72,9 @@ export const sendUnpaidInvoiceUserEmail = async ({
   dueDate,
   subject,
 }: SendUnpaidInvoiceUserEmailProps) => {
+  // Fieldkit: disabled. Stripe billing is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const html = await unpaidInvoiceUserHtml({
       customerEmail,

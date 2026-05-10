@@ -24,6 +24,9 @@ export const sendTeamTrialWelcomeEmail = async ({
   firstName,
   email,
 }: TeamTrialWelcomeProps) => {
+  // Fieldkit: disabled. Self-serve trial flow is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = "Your Shelf Team Trial is Ready - Next Steps";
     const html = await welcomeToTrialEmailHtml({ firstName });

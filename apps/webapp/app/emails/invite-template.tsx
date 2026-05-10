@@ -30,7 +30,7 @@ export function InvitationEmailTemplate({
   return (
     <Html>
       <Head>
-        <title>Invitation to join Shelf</title>
+        <title>Invitation to join Fieldkit</title>
       </Head>
 
       <Container
@@ -42,8 +42,8 @@ export function InvitationEmailTemplate({
           <Text style={{ marginBottom: "24px", ...styles.p }}>
             Howdy,
             <br />
-            {resolveUserDisplayName(invite.inviter)} invites you to join Shelf
-            as a member of {invite.organization.name}
+            {resolveUserDisplayName(invite.inviter)} invites you to join
+            Fieldkit as a member of {invite.organization.name}
             's workspace. Click the link to accept the invite:
           </Text>
 
@@ -98,7 +98,7 @@ export function InvitationEmailTemplate({
 
           <Text style={{ marginBottom: "32px", ...styles.p }}>
             Thanks, <br />
-            The Shelf team
+            The Fieldkit team
           </Text>
 
           <CustomEmailFooter
@@ -106,7 +106,7 @@ export function InvitationEmailTemplate({
           />
 
           <Text style={{ fontSize: "14px", color: "#344054" }}>
-            This is an automatic email sent from shelf.nu to{" "}
+            This is an automatic email sent from Fieldkit to{" "}
             <span style={{ color: emailPrimaryColor }}>
               {invite.inviteeEmail}
             </span>

@@ -28,6 +28,9 @@ export const sendAuditTrialEndsTomorrowEmail = async ({
   hasPaymentMethod,
   trialEndDate,
 }: AuditTrialEndsTomorrowProps) => {
+  // Fieldkit: disabled. Audits addon trial is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = hasPaymentMethod
       ? "Your Audits trial ends tomorrow — auto-charge reminder"

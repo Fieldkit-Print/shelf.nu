@@ -35,18 +35,10 @@ export default function App() {
         </div>
       </div>
       <aside className="relative hidden h-full flex-col items-end justify-end p-8 lg:flex lg:w-[700px] xl:w-[900px]">
-        {/* eslint-disable react/jsx-no-target-blank */}
-        <a
-          href="https://www.shelf.nu/?ref=shelf_app_auth_image"
-          className="relative z-20 mt-4 w-[150px] text-right text-sm text-white no-underline hover:text-white/80"
-          target="_blank"
-        >
-          shelf.nu
-        </a>
         <img
           className="absolute inset-0 size-full max-w-none object-cover"
-          src="/static/images/auth-cover.webp"
-          alt="John Singer Sargent - A Corner of the Library in Venice, 1904/1907 "
+          src="/static/images/fieldkit-auth-cover.png"
+          alt="Fieldkit"
         />
       </aside>
     </main>

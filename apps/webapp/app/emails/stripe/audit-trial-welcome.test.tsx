@@ -74,23 +74,15 @@ describe("sendAuditTrialWelcomeEmail", () => {
     vi.clearAllMocks();
   });
 
-  it("calls sendEmail with correct to, subject, and content", async () => {
+  // Fieldkit: send is disabled in this deployment; assert no-op.
+  it("does not send (Fieldkit disable)", async () => {
     await sendAuditTrialWelcomeEmail({
       firstName: "Alice",
       email: "alice@example.com",
       hasPaymentMethod: false,
     });
 
-    expect(mockSendEmail).toHaveBeenCalledOnce();
-    expect(mockSendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "alice@example.com",
-        subject: "Your 7-day Audits trial is now active!",
-      })
-    );
-    const call = mockSendEmail.mock.calls[0][0];
-    expect(call.html).toBeDefined();
-    expect(call.text).toBeDefined();
+    expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   it("does not throw when sendEmail fails (logs error instead)", async () => {

@@ -85,7 +85,8 @@ describe("sendBarcodeTrialEndsTomorrowEmail", () => {
     vi.clearAllMocks();
   });
 
-  it("calls sendEmail with auto-charge subject when hasPaymentMethod is true", async () => {
+  // Fieldkit: send is disabled in this deployment; assert no-op for both branches.
+  it("does not send when hasPaymentMethod is true (Fieldkit disable)", async () => {
     await sendBarcodeTrialEndsTomorrowEmail({
       firstName: "Alice",
       email: "alice@example.com",
@@ -93,16 +94,10 @@ describe("sendBarcodeTrialEndsTomorrowEmail", () => {
       trialEndDate: new Date("2026-03-24T00:00:00Z"),
     });
 
-    expect(mockSendEmail).toHaveBeenCalledOnce();
-    expect(mockSendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "alice@example.com",
-        subject: "Your Barcodes trial ends tomorrow — auto-charge reminder",
-      })
-    );
+    expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
-  it("calls sendEmail with generic subject when hasPaymentMethod is false", async () => {
+  it("does not send when hasPaymentMethod is false (Fieldkit disable)", async () => {
     await sendBarcodeTrialEndsTomorrowEmail({
       firstName: "Alice",
       email: "alice@example.com",
@@ -110,12 +105,7 @@ describe("sendBarcodeTrialEndsTomorrowEmail", () => {
       trialEndDate: new Date("2026-03-24T00:00:00Z"),
     });
 
-    expect(mockSendEmail).toHaveBeenCalledOnce();
-    expect(mockSendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        subject: "Your Barcodes trial ends tomorrow",
-      })
-    );
+    expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   it("does not throw when sendEmail fails", async () => {

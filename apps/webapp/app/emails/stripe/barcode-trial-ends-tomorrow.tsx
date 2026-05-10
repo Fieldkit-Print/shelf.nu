@@ -28,6 +28,9 @@ export const sendBarcodeTrialEndsTomorrowEmail = async ({
   hasPaymentMethod,
   trialEndDate,
 }: BarcodeTrialEndsTomorrowProps) => {
+  // Fieldkit: disabled. Barcode addon trial is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = hasPaymentMethod
       ? "Your Barcodes trial ends tomorrow — auto-charge reminder"

@@ -112,7 +112,7 @@ export default function ImportUsersDialog({
                 file. To get started,{" "}
                 <Button
                   variant="link"
-                  to="/static/shelf.nu-example-import-users-from-content.csv"
+                  to="/static/fieldkit-example-import-users-from-content.csv"
                   target="_blank"
                   download
                 >

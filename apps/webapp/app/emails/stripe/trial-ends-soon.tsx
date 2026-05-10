@@ -30,6 +30,9 @@ export const sendTrialEndsSoonEmail = async ({
   planName,
   trialEndDate,
 }: TrialEndsSoonProps) => {
+  // Fieldkit: disabled. Self-serve trial flow is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = hasPaymentMethod
       ? `Your Shelf ${planName} trial ends in 3 days — auto-charge reminder`

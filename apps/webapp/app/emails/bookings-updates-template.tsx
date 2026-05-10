@@ -76,7 +76,7 @@ export function BookingUpdatesEmailTemplate({
   return (
     <Html>
       <Head>
-        <title>Bookings update from Shelf.nu</title>
+        <title>Bookings update from Fieldkit</title>
       </Head>
 
       <Container

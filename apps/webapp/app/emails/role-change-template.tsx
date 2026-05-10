@@ -48,13 +48,13 @@ export function RoleChangeEmailTemplate({
 
           <Text style={{ marginBottom: "32px", ...styles.p }}>
             Thanks, <br />
-            The Shelf team
+            The Fieldkit team
           </Text>
 
           <CustomEmailFooter footerText={customEmailFooter} />
 
           <Text style={{ fontSize: "14px", color: "#344054" }}>
-            This is an automatic email sent from shelf.nu to{" "}
+            This is an automatic email sent from Fieldkit to{" "}
             <span style={{ color: emailPrimaryColor }}>{recipientEmail}</span>.
           </Text>
         </div>

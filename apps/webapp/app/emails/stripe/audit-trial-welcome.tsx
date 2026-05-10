@@ -29,6 +29,9 @@ export const sendAuditTrialWelcomeEmail = async ({
   email,
   hasPaymentMethod,
 }: AuditTrialWelcomeProps) => {
+  // Fieldkit: disabled. Audits addon trial is unused in this deployment.
+  return;
+  // eslint-disable-next-line no-unreachable
   try {
     const subject = "Your 7-day Audits trial is now active!";
     const greeting = displayName || firstName;

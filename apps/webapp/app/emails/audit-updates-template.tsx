@@ -83,7 +83,7 @@ export function AuditUpdatesEmailTemplate({
   return (
     <Html>
       <Head>
-        <title>Audit update from Shelf.nu</title>
+        <title>Audit update from Fieldkit</title>
       </Head>
 
       <Container
@@ -218,7 +218,7 @@ export function AuditUpdatesEmailTemplate({
             >
               Thanks,
               <br />
-              The Shelf Team
+              The Fieldkit Team
             </p>
           )}
           <p
@@ -229,7 +229,7 @@ export function AuditUpdatesEmailTemplate({
               color: "#344054",
             }}
           >
-            © {new Date().getFullYear()} Shelf.nu
+            © {new Date().getFullYear()} Fieldkit
           </p>
         </div>
       </Container>
