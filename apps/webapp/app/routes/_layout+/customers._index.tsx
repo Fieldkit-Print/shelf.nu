@@ -1,9 +1,10 @@
 /**
- * Customers Admin — List
+ * Customers Admin — List (FDW edition)
  *
- * Lists Carbon-synced customers in the current organization. Read-only view
- * (Carbon owns the master data); admins can drill into a customer detail
- * page to manage per-contact permissions.
+ * Lists Carbon customers in the Fieldkit company with Shelf-side counters
+ * (number of provisioned contact Users, number of stored Assets) merged in.
+ * Customer master data is read live from Carbon's REST API — there is no
+ * local Customer mirror after the FDW refactor.
  *
  * Permissions: ADMIN/OWNER only — see Role2PermissionMap entry for
  * `PermissionEntity.customer`.
@@ -13,10 +14,9 @@
  */
 
 import type { LoaderFunctionArgs, MetaFunction } from "react-router";
-import { Link, data, useLoaderData } from "react-router";
+import { data, Link, useLoaderData } from "react-router";
 
 import type { HeaderData } from "~/components/layout/header/types";
-import { Badge } from "~/components/shared/badge";
 import { listCustomers } from "~/modules/customer/service.server";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { makeShelfError } from "~/utils/error";
@@ -41,20 +41,18 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
 
     const params = getCurrentSearchParams(request);
     const search = params.get("search") ?? undefined;
-    const includeArchived = params.get("includeArchived") === "true";
     const page = Number(params.get("page") ?? 1);
 
     const { customers, total, perPage } = await listCustomers({
       organizationId,
       search,
-      includeArchived,
       page,
     });
 
     const header: HeaderData = {
       title: "Customers",
       subHeading:
-        "Customers synced from Carbon ERP. Master data is read-only — make edits in Carbon.",
+        "Customers from Carbon ERP. Master data is read-only — make edits in Carbon.",
     };
 
     return {
@@ -64,7 +62,6 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       page,
       perPage,
       search: search ?? "",
-      includeArchived,
     };
   } catch (cause) {
     const reason = makeShelfError(cause, { userId });
@@ -81,7 +78,7 @@ export const handle = {
 };
 
 export default function CustomersIndex() {
-  const { customers, search, includeArchived, total, page, perPage } =
+  const { customers, search, total, page, perPage } =
     useLoaderData<typeof loader>();
 
   const totalPages = Math.max(1, Math.ceil(total / perPage));
@@ -93,20 +90,10 @@ export default function CustomersIndex() {
           <input
             name="search"
             type="search"
-            placeholder="Search by name, email, or Carbon id"
+            placeholder="Search by name"
             className="rounded border border-gray-200 px-3 py-1.5 text-sm"
             defaultValue={search}
           />
-          <label className="flex items-center gap-1.5 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              name="includeArchived"
-              value="true"
-              defaultChecked={includeArchived}
-              className="rounded border-gray-300"
-            />
-            Include archived
-          </label>
           <button
             type="submit"
             className="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white"
@@ -123,21 +110,18 @@ export default function CustomersIndex() {
         <thead className="border-b border-gray-100 bg-gray-50 text-xs font-medium text-gray-500">
           <tr>
             <th className="px-4 py-2 text-left md:px-6">Customer</th>
-            <th className="px-4 py-2 text-left">Status</th>
             <th className="px-4 py-2 text-right">Contacts</th>
             <th className="px-4 py-2 text-right">Stored items</th>
-            <th className="px-4 py-2 text-left">Last synced</th>
           </tr>
         </thead>
         <tbody>
           {customers.length === 0 ? (
             <tr>
               <td
-                colSpan={5}
+                colSpan={3}
                 className="px-4 py-6 text-center text-sm text-gray-500"
               >
-                No customers yet. Sync runs nightly; new customers will appear
-                here automatically.
+                No customers in Carbon for this company yet.
               </td>
             </tr>
           ) : (
@@ -153,23 +137,15 @@ export default function CustomersIndex() {
                   >
                     {c.displayName}
                   </Link>
-                  <div className="text-xs text-gray-500">
-                    {c.billingEmail ?? "—"} · Carbon id: {c.carbonCustomerId}
+                  <div className="font-mono text-xs text-gray-500">
+                    Carbon id: {c.id}
                   </div>
                 </td>
-                <td className="px-4 py-3">
-                  <Badge color={c.status === "ACTIVE" ? "#12B76A" : "#667085"}>
-                    {c.status}
-                  </Badge>
+                <td className="px-4 py-3 text-right tabular-nums">
+                  {c.contactCount}
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">
-                  {c._count.contacts}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  {c._count.assets}
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-600">
-                  {new Date(c.syncedAt).toLocaleString()}
+                  {c.assetCount}
                 </td>
               </tr>
             ))
@@ -188,7 +164,6 @@ export default function CustomersIndex() {
                 className="rounded border border-gray-200 px-3 py-1.5 text-gray-700"
                 to={`?${new URLSearchParams({
                   search,
-                  ...(includeArchived ? { includeArchived: "true" } : {}),
                   page: String(page - 1),
                 }).toString()}`}
               >
@@ -200,7 +175,6 @@ export default function CustomersIndex() {
                 className="rounded border border-gray-200 px-3 py-1.5 text-gray-700"
                 to={`?${new URLSearchParams({
                   search,
-                  ...(includeArchived ? { includeArchived: "true" } : {}),
                   page: String(page + 1),
                 }).toString()}`}
               >

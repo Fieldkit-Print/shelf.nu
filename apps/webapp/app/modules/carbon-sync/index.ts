@@ -1,13 +1,15 @@
 /**
- * Carbon Sync — module barrel.
+ * Carbon Sync — module barrel (FDW edition).
  *
  * Public surface area for callers outside the carbon-sync module:
  *
  * - `dispatchCarbonEvent` / `verifyCarbonWebhookToken` — webhook entry points
- * - `upsertCustomerFromCarbon` / `upsertContactLink` / `updateUserFromContact`
- *   — manual upserts (e.g., from the internal admin "force resync" button)
+ * - `upsertContactLink` / `removeContactLink` / `updateUserFromContact` —
+ *   contact ↔ User provisioning (manual force-sync hooks)
+ * - `upsertItemForShelf` / `archiveItemFromShelf` — CONSUMABLE Asset
+ *   provisioning from Carbon item events
  * - `registerCarbonSyncWorker` — call once at server boot
- * - `reconcileAll` — programmatic full sync
+ * - `reconcileAll` — programmatic full sync (contact links only)
  *
  * @see {@link file://./docs/CARBON_MIGRATION.sql} SQL to apply on Carbon
  */
@@ -16,6 +18,9 @@ export type {
   CarbonContact,
   CarbonCustomer,
   CarbonCustomerContact,
+  CarbonItem,
+  CarbonItemTrackingType,
+  CarbonItemType,
   CarbonSyncJob,
   CarbonWebhookPayload,
 } from "./types";
@@ -28,12 +33,11 @@ export {
 } from "./webhook.server";
 
 export {
-  archiveCustomerFromCarbon,
+  archiveItemFromShelf,
   removeContactLink,
   updateUserFromContact,
   upsertContactLink,
-  upsertCustomerFromCarbon,
-  upsertCustomerFromCarbonLite,
+  upsertItemForShelf,
   upsertUserFromContact,
 } from "./service.server";
 

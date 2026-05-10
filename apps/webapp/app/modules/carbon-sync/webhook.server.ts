@@ -1,26 +1,32 @@
 /**
- * Carbon Webhook Handler
+ * Carbon Webhook Handler (FDW edition)
  *
  * Receives Carbon ERP webhook deliveries (relayed by Carbon's
  * `supabase/functions/webhook` Edge Function) and dispatches them to the
- * appropriate upsert/archive/link function. Carbon does not authenticate
- * outbound webhooks, so we use:
+ * appropriate provisioning function. Carbon does not authenticate outbound
+ * webhooks, so we use:
  *
  *   1. **Query-string token**: the URL registered in Carbon's webhook UI
  *      includes `?token=<CARBON_WEBHOOK_SECRET>`. Compared timing-safely.
  *   2. **Company filter**: every Carbon payload carries `companyId`. We
- *      reject anything not from `FIELDKIT_CARBON_COMPANY_ID` so a misrouted
- *      webhook from another Carbon tenant can't touch our data.
+ *      reject anything not from `FIELDKIT_CARBON_COMPANY_ID`.
  *
- * Carbon's payload shape (after the Edge Function relay):
+ * Carbon's payload shape after the Edge Function relay:
  *
  *   {
  *     "type": "INSERT" | "UPDATE" | "DELETE",
  *     "record": { ...new row... },
- *     "old":    { ...prior row... },   // only on UPDATE/DELETE
+ *     "old":    { ...prior row... },        // UPDATE/DELETE only
  *     "companyId": "cmp_...",
- *     "table": "customer" | "customerContact" | "contact"
+ *     "table": "customer" | "customerContact" | "contact" | "item"
  *   }
+ *
+ * Tables and what we do with them:
+ *   - `customer`         → ack-only (Shelf reads via FDW, no mirror).
+ *   - `customerContact`  → INSERT/UPDATE provision User; DELETE unlink.
+ *   - `contact`          → UPDATE refreshes User email/name; INSERT/DELETE ignored.
+ *   - `item`             → INSERT/UPDATE provision/archive CONSUMABLE Asset
+ *                          when `visibleInShelf` qualifies; DELETE archive.
  *
  * @see {@link file://./types.ts}            CarbonWebhookPayload shape
  * @see {@link file://./service.server.ts}   Upsert dispatch
@@ -32,12 +38,13 @@ import { timingSafeEqual } from "node:crypto";
 import { CARBON_WEBHOOK_SECRET, FIELDKIT_CARBON_COMPANY_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
+
 import {
-  archiveCustomerFromCarbon,
+  archiveItemFromShelf,
   removeContactLink,
   updateUserFromContact,
   upsertContactLink,
-  upsertCustomerFromCarbon,
+  upsertItemForShelf,
 } from "./service.server";
 import type { CarbonWebhookPayload } from "./types";
 
@@ -101,9 +108,8 @@ export function payloadMatchesCompany(payload: { companyId: string }): boolean {
 }
 
 /**
- * Dispatches a verified Carbon webhook payload to the correct upsert /
- * archive / link function. Caller is responsible for verifying the token
- * and the company filter first.
+ * Dispatches a verified Carbon webhook payload to the correct provisioning
+ * function. Caller is responsible for verifying the token + company first.
  *
  * @returns A short string suitable for telemetry / debugging.
  */
@@ -112,11 +118,16 @@ export async function dispatchCarbonEvent(
 ): Promise<string> {
   switch (payload.table) {
     case "customer":
-      return dispatchCustomer(payload);
+      // FDW edition: Shelf doesn't mirror customer master. Ack only.
+      return `customer ${
+        payload.record.id
+      } ${payload.type.toLowerCase()} (ack-only, no mirror)`;
     case "customerContact":
       return dispatchCustomerContact(payload);
     case "contact":
       return dispatchContact(payload);
+    case "item":
+      return dispatchItem(payload);
     default: {
       const _exhaustive: never = payload;
       Logger.warn(
@@ -124,24 +135,6 @@ export async function dispatchCarbonEvent(
         _exhaustive
       );
       return "ignored unknown table";
-    }
-  }
-}
-
-async function dispatchCustomer(
-  payload: Extract<CarbonWebhookPayload, { table: "customer" }>
-): Promise<string> {
-  switch (payload.type) {
-    case "INSERT":
-    case "UPDATE":
-      await upsertCustomerFromCarbon(payload.record);
-      return `customer ${payload.record.id} upserted (${payload.type})`;
-    case "DELETE":
-      await archiveCustomerFromCarbon(payload.record.id);
-      return `customer ${payload.record.id} archived`;
-    default: {
-      const _exhaustive: never = payload.type;
-      return `ignored unknown customer event type ${_exhaustive as string}`;
     }
   }
 }
@@ -155,8 +148,6 @@ async function dispatchCustomerContact(
       await upsertContactLink(payload.record);
       return `customerContact link upserted (customer=${payload.record.customerId} contact=${payload.record.contactId})`;
     case "DELETE":
-      // For DELETE, Carbon's relay keeps `record` set to the deleted row
-      // (per the trigger function in 20250203121216_webhooks.sql:289+).
       await removeContactLink(payload.record);
       return `customerContact link removed (customer=${payload.record.customerId} contact=${payload.record.contactId})`;
     default: {
@@ -178,12 +169,32 @@ async function dispatchContact(
     case "INSERT":
     case "DELETE":
       // Standalone contacts (without a customerContact junction row) aren't
-      // meaningful to shelf — provisioning happens on customerContact INSERT
-      // and unlinking on customerContact DELETE. Ack and move on.
+      // meaningful to Shelf — provisioning happens via customerContact.
       return `contact ${payload.type} ignored (handled via customerContact)`;
     default: {
       const _exhaustive: never = payload.type;
       return `ignored unknown contact event type ${_exhaustive as string}`;
+    }
+  }
+}
+
+async function dispatchItem(
+  payload: Extract<CarbonWebhookPayload, { table: "item" }>
+): Promise<string> {
+  switch (payload.type) {
+    case "INSERT":
+    case "UPDATE": {
+      const id = await upsertItemForShelf(payload.record);
+      return id
+        ? `item ${payload.record.id} provisioned/refreshed as Shelf asset ${id}`
+        : `item ${payload.record.id} not visible in Shelf (archived if existed)`;
+    }
+    case "DELETE":
+      await archiveItemFromShelf(payload.record.id);
+      return `item ${payload.record.id} archived in Shelf`;
+    default: {
+      const _exhaustive: never = payload.type;
+      return `ignored unknown item event type ${_exhaustive as string}`;
     }
   }
 }

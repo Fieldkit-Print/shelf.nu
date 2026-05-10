@@ -1,8 +1,4 @@
-import type {
-  CustomerContactPermission,
-  CustomerStatus,
-  SsoDetails,
-} from "@prisma/client";
+import type { CustomerContactPermission, SsoDetails } from "@prisma/client";
 import { OrganizationRoles, Roles } from "@prisma/client";
 import { db } from "~/database/db.server";
 import { getSelectedOrganization } from "~/modules/organization/context.server";
@@ -95,34 +91,35 @@ export async function requirePermission({
   const isCustomer = role === OrganizationRoles.CUSTOMER;
 
   /**
-   * Customer-tenancy linkage (Fieldkit only).
+   * Customer-tenancy linkage (Fieldkit only, FDW edition).
    *
-   * For CUSTOMER role users we MUST resolve the linked `fieldkitCustomerId`
-   * here so every downstream query can scope correctly. Without this id the
-   * caller would either (a) leak other customers' data or (b) return nothing
-   * at all — both worse than failing fast. We also reject sign-in for users
-   * whose Customer record is archived.
+   * For CUSTOMER role users we resolve the linked `carbonCustomerId` here
+   * so every downstream query can scope correctly. Without this id the
+   * caller would either (a) leak other customers' data or (b) return
+   * nothing at all — both worse than failing fast.
    *
-   * Non-customer roles skip this block entirely (zero extra queries) so the
-   * staff path stays as fast as upstream.
+   * Customer master data (status, archivedAt) lives in Carbon and is read
+   * via the `carbon_remote.v1_customers` foreign view by callers that need
+   * it. We do not block sign-in here on archived state — that check moves
+   * to the route-level loader where FDW reads happen — because doing it
+   * inside `requirePermission()` would make every staff request couple to
+   * Carbon's availability.
+   *
+   * Non-customer roles skip this block entirely (zero extra queries).
    */
-  let fieldkitCustomerId: string | null = null;
+  let carbonCustomerId: string | null = null;
   let customerContactPermission: CustomerContactPermission | null = null;
-  let customerStatus: CustomerStatus | null = null;
 
   if (isCustomer) {
     const customerUser = await db.user.findUnique({
       where: { id: userId },
       select: {
-        fieldkitCustomerId: true,
+        carbonCustomerId: true,
         customerContactPermission: true,
-        fieldkitCustomer: {
-          select: { status: true, archivedAt: true },
-        },
       },
     });
 
-    if (!customerUser?.fieldkitCustomerId || !customerUser.fieldkitCustomer) {
+    if (!customerUser?.carbonCustomerId) {
       throw new ShelfError({
         cause: null,
         title: "Customer account not linked",
@@ -135,26 +132,8 @@ export async function requirePermission({
       });
     }
 
-    if (customerUser.fieldkitCustomer.status === "ARCHIVED") {
-      throw new ShelfError({
-        cause: null,
-        title: "Customer account archived",
-        message:
-          "This customer account has been archived. Please contact Fieldkit support if you believe this is in error.",
-        additionalData: {
-          userId,
-          organizationId,
-          fieldkitCustomerId: customerUser.fieldkitCustomerId,
-        },
-        label: "Permission",
-        status: 403,
-        shouldBeCaptured: false,
-      });
-    }
-
-    fieldkitCustomerId = customerUser.fieldkitCustomerId;
+    carbonCustomerId = customerUser.carbonCustomerId;
     customerContactPermission = customerUser.customerContactPermission;
-    customerStatus = customerUser.fieldkitCustomer.status;
   }
 
   /**
@@ -203,9 +182,8 @@ export async function requirePermission({
     role,
     isSelfServiceOrBase,
     isCustomer,
-    fieldkitCustomerId,
+    carbonCustomerId,
     customerContactPermission,
-    customerStatus,
     userOrganizations,
     canSeeAllBookings,
     canSeeAllCustody,

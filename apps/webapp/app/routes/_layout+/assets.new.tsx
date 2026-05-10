@@ -23,7 +23,7 @@ import {
   mergedSchema,
 } from "~/utils/custom-fields";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
-import { makeShelfError } from "~/utils/error";
+import { makeShelfError, ShelfError } from "~/utils/error";
 import {
   assertIsPost,
   payload,
@@ -44,11 +44,36 @@ const header = {
   title,
 };
 
+/**
+ * Fieldkit FDW edition: ad-hoc Shelf asset creation is disabled. New
+ * assets are provisioned by Carbon (item webhooks for CONSUMABLE rows,
+ * future Carbon-calls-Shelf API for INSTANCE rows). The loader and action
+ * both throw 403 with a friendly message redirecting users to Carbon.
+ *
+ * `validatePermission()` short-circuits to true for ADMIN/OWNER regardless
+ * of the role permission map, so we add this explicit guard at the route.
+ */
+function throwFieldkitCreationDisabled(): never {
+  throw new ShelfError({
+    cause: null,
+    title: "Asset creation moved to Carbon",
+    message:
+      "New assets are created in Carbon ERP. When an item is marked `visibleInShelf` it appears here automatically; when a unit is received it shows up as an INSTANCE asset. Use the import flow for ad-hoc historical loads only.",
+    label: "Assets",
+    status: 403,
+    shouldBeCaptured: false,
+  });
+}
+
 export async function loader({ context, request }: LoaderFunctionArgs) {
   const authSession = context.getSession();
   const { userId } = authSession;
 
   try {
+    // Throw before doing any work. The catch block below converts this
+    // into a 403 data response with our message — same path the existing
+    // ShelfError handling uses for permission failures.
+    throwFieldkitCreationDisabled();
     const { organizationId, currentOrganization } = await requirePermission({
       userId,
       request,
@@ -115,6 +140,9 @@ export async function action({ context, request }: LoaderFunctionArgs) {
 
   try {
     assertIsPost(request);
+    // FDW edition: see throwFieldkitCreationDisabled() above. Block any
+    // direct POST as well, in case a stale form somewhere submits to us.
+    throwFieldkitCreationDisabled();
 
     const { organizationId, canUseBarcodes } = await requirePermission({
       userId,
@@ -213,9 +241,12 @@ export async function action({ context, request }: LoaderFunctionArgs) {
     ];
 
     if (asset.location) {
+      // FDW edition: this code path is unreachable (throwFieldkitCreationDisabled
+      // throws at the top of the action). Non-null assertions retained to
+      // satisfy TS while the dead branch is being phased out.
       const locationLink = wrapLinkForNote(
-        `/locations/${asset.location.id}`,
-        asset.location.name.trim()
+        `/locations/${asset.location!.id}`,
+        asset.location!.name.trim()
       );
       postCreationTasks.push(
         createNote({

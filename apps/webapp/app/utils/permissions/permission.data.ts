@@ -162,8 +162,13 @@ export const Role2PermissionMap: {
     [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.ADMIN]: {
+    // Fieldkit FDW edition: `create` on asset is intentionally omitted.
+    // New Shelf assets are provisioned by Carbon (item webhooks for
+    // CONSUMABLE rows, and a future Carbon-calls-Shelf API for INSTANCE
+    // rows). The `/assets/new` route returns 403 as a result. `import` is
+    // retained for one-off bulk loads (migration, ad-hoc customer-stored
+    // gear not in Carbon's catalog).
     [PermissionEntity.asset]: [
-      PermissionAction.create,
       PermissionAction.read,
       PermissionAction.update,
       PermissionAction.delete,
@@ -364,8 +369,8 @@ export const Role2PermissionMap: {
     [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.OWNER]: {
+    // Fieldkit FDW edition: `create` removed; see ADMIN block above.
     [PermissionEntity.asset]: [
-      PermissionAction.create,
       PermissionAction.read,
       PermissionAction.update,
       PermissionAction.delete,

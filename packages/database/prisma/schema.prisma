@@ -54,26 +54,27 @@ model User {
   lastSelectedOrganization   Organization? @relation("lastSelectedOrg", fields: [lastSelectedOrganizationId], references: [id], onDelete: SetNull)
   lastSelectedOrganizationId String?
 
-  // Fieldkit customer link. Named `fieldkitCustomerId` (not `customerId`) to
-  // avoid colliding with the upstream `customerId` field (Stripe), keeping
-  // upstream Shelf-nu merges clean.
+  // Fieldkit customer link. Carbon owns the customer master; Shelf only
+  // stores a text reference to `carbon.customer.id`. No FK — Shelf doesn't
+  // have a local Customer table after the FDW refactor (the prior
+  // `Customer` mirror was dropped). Cross-app reads happen via the
+  // `carbon_remote.v1_customers` foreign view (see contract-views.md).
   //
   // - `null`  → internal Fieldkit staff user (no external customer scoping).
   // - `set`   → this user is a customer contact synced from Carbon ERP and is
   //              expected to hold the CUSTOMER role on the Fieldkit org.
   //
   // The `requirePermission()` middleware uses this id to inject a hard
-  // `customerId = user.fieldkitCustomerId` filter into every Asset/Booking
-  // query for CUSTOMER role users. See ~/utils/roles.server.ts.
-  fieldkitCustomer   Customer? @relation(fields: [fieldkitCustomerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
-  fieldkitCustomerId String?
+  // `Asset.carbonCustomerId = user.carbonCustomerId` filter on every
+  // Asset/Booking query for CUSTOMER-role users. See ~/utils/roles.server.ts.
+  carbonCustomerId String?
 
   // Source-of-truth contact id from Carbon ERP. Used by the carbon-sync module
   // to upsert contact rows idempotently. Globally unique because we expect each
   // Carbon contact to map to at most one shelf User.
   carbonContactId String? @unique
 
-  // Per-contact granular permission toggles (only meaningful when fieldkitCustomerId is set).
+  // Per-contact granular permission toggles (only meaningful when carbonCustomerId is set).
   customerContactPermission CustomerContactPermission?
 
   // Datetime
@@ -145,7 +146,7 @@ model User {
   // Indexes for foreign keys
   @@index([tierId])
   @@index([lastSelectedOrganizationId])
-  @@index([fieldkitCustomerId])
+  @@index([carbonCustomerId])
   @@index([carbonContactId])
 }
 
@@ -212,9 +213,20 @@ model Asset {
   thumbnailImage      String?
   mainImageExpiration DateTime?
   status              AssetStatus @default(AVAILABLE)
-  valuation           Float?      @map("value") // Field to store the monetary value of an asset
+  /// @deprecated Display layer should prefer Carbon's `v1_parts.standardCost`
+  /// joined via FDW from `carbonPartId`. Column retained for upstream Shelf-nu
+  /// merge compatibility and the existing CSV import/export pipeline.
+  valuation           Float?      @map("value")
   availableToBook     Boolean     @default(true)
   sequentialId        String? // Sequential identifier for the asset (e.g., "SAM-0001")
+
+  /// Whether this row represents a single physical unit (`INSTANCE`) or a
+  /// quantity-tracked consumable batch (`CONSUMABLE`). See {@link AssetKind}.
+  /// Carbon's `item.itemTrackingType` drives this on provisioning:
+  ///   Serial          → INSTANCE (one Asset per serialNumber)
+  ///   Batch/Inventory → CONSUMABLE (one Asset per item, quantity read via FDW)
+  ///   Non-Inventory   → no Asset record
+  kind AssetKind @default(INSTANCE)
 
   // Datetime
   createdAt DateTime @default(now())
@@ -232,21 +244,28 @@ model Asset {
   kit            Kit?         @relation(fields: [kitId], references: [id])
   kitId          String?
 
-  // Customer ownership for Fieldkit storage tenancy.
-  //
-  // - `null` → Fieldkit-owned inventory (internal staff assets, plus rental
-  //             pool when `rentable = true`).
-  // - `set`  → asset is stored on behalf of the referenced Customer. CUSTOMER
-  //             role queries are filtered to `customerId = user.customerId`.
-  //
-  // `onDelete: SetNull` so archiving a customer keeps historical asset records
-  // intact (we still want them visible to staff for billing reconciliation).
-  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
-  customerId String?
+  /// Reference to Carbon's `item.id` (the SKU master). No FK — Carbon owns
+  /// the item table and Shelf reads it via the `carbon_remote.v1_items`
+  /// foreign view. Nullable because some legacy / non-catalog Shelf assets
+  /// may not be backed by a Carbon item; new Shelf assets are always
+  /// provisioned by Carbon and will have this set.
+  carbonPartId String?
 
-  // When true, this Fieldkit-owned asset (customerId = null) is rentable by
-  // any customer with `CustomerContactPermission.canRentInventory = true`.
-  // Has no effect on customer-owned assets.
+  /// Customer ownership for Fieldkit storage tenancy. References Carbon's
+  /// `customer.id` directly (no local Customer mirror — see contract-views.md
+  /// in apps/webapp/app/modules/carbon-sync/docs/).
+  ///
+  /// - `null` → Fieldkit-owned inventory (internal staff assets, plus rental
+  ///            pool when `rentable = true`).
+  /// - `set`  → asset is stored on behalf of the referenced Carbon customer.
+  ///            CUSTOMER-role queries are filtered to
+  ///            `Asset.carbonCustomerId = user.carbonCustomerId`.
+  carbonCustomerId String?
+
+  /// When true, this Fieldkit-owned asset (carbonCustomerId = null) is
+  /// rentable by any customer with
+  /// `CustomerContactPermission.canRentInventory = true`. No effect on
+  /// customer-owned assets.
   rentable Boolean @default(false)
 
   custody      Custody?
@@ -257,6 +276,10 @@ model Asset {
   tags         Tag[]
   customFields AssetCustomFieldValue[]
   bookings     Booking[]
+  /// Per-booking metadata (quantity sent / returned). Relevant only for
+  /// CONSUMABLE assets; INSTANCE rows always imply quantity 1. Decoupled
+  /// from the implicit Booking↔Asset M2M so existing flows keep working.
+  bookingAssetMetas BookingAssetMeta[]
   reminders    AssetReminder[]
   auditEntries AuditAsset[]
   auditScans   AuditScan[]
@@ -276,11 +299,29 @@ model Asset {
   @@index([sequentialId], name: "Asset_sequentialId_idx")
   // Index for foreign key
   @@index([userId])
-  // CUSTOMER role queries always filter by (organizationId, customerId);
-  // this composite makes those scans index-only.
-  @@index([organizationId, customerId], name: "Asset_organizationId_customerId_idx")
-  // Rental pool lookups: list rentable Fieldkit-owned inventory across the org.
+  /// CUSTOMER-role queries always filter by (organizationId, carbonCustomerId);
+  /// this composite makes those scans index-only.
+  @@index([organizationId, carbonCustomerId], name: "Asset_organizationId_carbonCustomerId_idx")
+  /// Rental pool lookups: list rentable Fieldkit-owned inventory across the org.
   @@index([organizationId, rentable], name: "Asset_organizationId_rentable_idx")
+  /// Filter by INSTANCE vs CONSUMABLE within an org (e.g., booking forms
+  /// listing only consumables).
+  @@index([organizationId, kind], name: "Asset_organizationId_kind_idx")
+  /// Reverse lookup: find every Shelf Asset for a given Carbon item id
+  /// (used when handling Carbon item UPDATE webhooks).
+  @@index([carbonPartId], name: "Asset_carbonPartId_idx")
+}
+
+/// Discriminator on `Asset` driven by Carbon's `item.itemTrackingType`.
+enum AssetKind {
+  /// One physical unit. Has location, custody, can be checked out individually.
+  /// Mints when Carbon creates a `serialNumber` row (one Asset per serial).
+  INSTANCE
+  /// Quantity-tracked consumable batch. Quantity-on-hand lives in Carbon
+  /// (read via FDW); Shelf only stores location, customer link, kit/booking
+  /// membership. Mints when Carbon creates an Inventory- or Batch-tracked
+  /// item with `visibleInShelf = true`.
+  CONSUMABLE
 }
 
 enum AssetStatus {
@@ -801,10 +842,6 @@ model Organization {
   teamMemberNotes     TeamMemberNote[]
   activityEvents      ActivityEvent[]
 
-  // Fieldkit customer tenancy: customers synced from Carbon ERP whose assets
-  // live in this org. Each Customer scopes a set of CUSTOMER-role users.
-  customers Customer[]
-
   // Migration flag to track if sequential IDs have been generated for this organization's existing assets
   hasSequentialIdsMigrated Boolean @default(false)
 
@@ -1239,6 +1276,10 @@ model Booking {
   organizationId String
 
   assets Asset[]
+  /// Per-(booking, asset) quantity metadata. See {@link BookingAssetMeta}.
+  /// Optional — only populated for CONSUMABLE assets or when explicit qty
+  /// tracking is needed; INSTANCE-only bookings can rely on the M2M alone.
+  bookingAssetMetas BookingAssetMeta[]
   notes  BookingNote[]
 
   tags            Tag[]
@@ -1895,95 +1936,39 @@ enum ActivityAction {
 }
 
 // =============================================================================
-// Fieldkit customer tenancy
+// Fieldkit customer tenancy (FDW edition)
 // =============================================================================
 //
 // Shelf already supports tenancy at the `Organization` level (each org is a
 // hard-isolated workspace). Fieldkit needs a second axis of tenancy *inside*
 // a single org: the print shop runs one shelf workspace and stores items on
-// behalf of many customers. Each Customer below is a Fieldkit customer mirrored
-// from Carbon ERP. CUSTOMER-role users (synced from Carbon contacts) see only
-// the assets owned by their Customer plus rentable inventory.
+// behalf of many customers.
 //
-// Source of truth: Carbon ERP. See ~/modules/carbon-sync/* for the sync logic.
+// Customer master data lives in Carbon ERP and is read by Shelf via Postgres
+// foreign data wrappers (`carbon_remote.v1_customers`). Shelf does NOT keep
+// a local Customer mirror — only references to Carbon ids:
+//
+//   - `User.carbonCustomerId` (text)         → which Carbon customer the user is a contact of
+//   - `User.carbonContactId` (text, unique)  → which Carbon contact this user mirrors
+//   - `Asset.carbonCustomerId` (text)        → which Carbon customer the asset is stored for
+//   - `Asset.carbonPartId` (text)            → which Carbon item this asset instances/batches
+//
+// CUSTOMER-role users see only assets where `Asset.carbonCustomerId` matches
+// their `User.carbonCustomerId`, plus rentable Fieldkit-owned inventory.
+//
+// See apps/webapp/app/modules/carbon-sync/docs/ for the contract views, the
+// reverse-direction Carbon migration, and the deployment guide.
 // =============================================================================
-
-/**
- * Customer status, mirrored from Carbon ERP customer state. ARCHIVED customers
- * are kept (soft-archived) so historical billing rows and asset records remain
- * resolvable. Their CUSTOMER users have access revoked at the role layer.
- */
-enum CustomerStatus {
-  ACTIVE
-  ARCHIVED
-}
-
-/**
- * Fieldkit customer (mirror of a Carbon ERP customer).
- *
- * One row per customer. Carson's print shop is the single shelf Organization;
- * each Customer row scopes a subset of that org's Assets and a subset of its
- * CUSTOMER-role Users.
- *
- * The carbonCustomerId is unique within an Organization (so the same Carbon
- * customer can't appear twice in one workspace), and the carbon-sync module
- * upserts on `(organizationId, carbonCustomerId)`.
- */
-model Customer {
-  id String @id @default(cuid())
-
-  /** Source-of-truth ID from Carbon ERP. Used as the upsert key for sync. */
-  carbonCustomerId String
-
-  /** Display name shown in the shelf UI. Synced from Carbon. */
-  displayName String
-
-  /** Primary billing email (used for invoices/notifications). Synced from Carbon. */
-  billingEmail String?
-
-  /**
-   * Mirror of Carbon's customer state.
-   *
-   * @see {@link CustomerStatus}
-   */
-  status CustomerStatus @default(ACTIVE)
-
-  /** Free-form notes (operational, not synced from Carbon). */
-  notes String?
-
-  /** Timestamp of the last successful sync from Carbon. */
-  syncedAt DateTime @default(now())
-
-  /** When the customer was archived (mirrors Carbon archive). */
-  archivedAt DateTime?
-
-  // Relationships
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  organizationId String
-
-  /** Customer contact users (one per Carbon contact). */
-  contacts User[]
-
-  /** Assets stored on behalf of this customer (Asset.customerId = this.id). */
-  assets Asset[]
-
-  // Datetime
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([organizationId, carbonCustomerId])
-  @@index([organizationId])
-  @@index([status])
-  @@index([archivedAt])
-}
 
 /**
  * Per-contact permission toggles for CUSTOMER-role users.
  *
- * A row exists only for users where `User.customerId` is set. Defaults are
+ * A row exists only for users where `User.carbonCustomerId` is set. Defaults are
  * conservative: a freshly synced customer contact can request shipment/return
  * but cannot rent inventory, view billing, or manage other contacts. Internal
  * admins adjust these via the customer detail page.
+ *
+ * This stays Shelf-local (it's per-contact policy, not Carbon master data).
  */
 model CustomerContactPermission {
   id String @id @default(cuid())
@@ -2012,4 +1997,42 @@ model CustomerContactPermission {
   // Datetime
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/**
+ * Per-(booking, asset) metadata. Tracks how much of a CONSUMABLE asset was
+ * sent out on a booking and how much came back. Differential = consumed,
+ * which becomes a billable event in Carbon.
+ *
+ * Decoupled from the existing implicit `Booking <-> Asset` M2M so existing
+ * routes that just check membership keep working. New code that needs
+ * quantity awareness reads from this table.
+ *
+ * For INSTANCE assets (one physical unit) the row is optional: when present
+ * `quantityOut` and `quantityReturned` are both 1; when absent, treat the
+ * relationship as a plain "this asset is on the booking" with implicit qty 1.
+ */
+model BookingAssetMeta {
+  id String @id @default(cuid())
+
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  bookingId String
+
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  assetId String
+
+  /// Quantity sent out at booking check-out. For INSTANCE assets this is 1.
+  /// For CONSUMABLE assets this is the count loaded onto the truck.
+  quantityOut Float @default(0)
+
+  /// Quantity returned at booking check-in. Difference vs `quantityOut` is
+  /// what was consumed, which the billing pipeline reports to Carbon.
+  /// Null until the booking is checked back in.
+  quantityReturned Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([bookingId, assetId])
+  @@index([assetId])
 }

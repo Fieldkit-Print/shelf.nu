@@ -87,9 +87,9 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
         custody: { include: { custodian: true } },
         kit: true,
         qrCodes: true,
-        // Fieldkit: surface owning customer (if any) so the detail header
-        // can show "Stored for: <Customer>" / "Rentable" badges.
-        customer: { select: { id: true, displayName: true, status: true } },
+        // Fieldkit: `Asset.carbonCustomerId` is a text reference into Carbon
+        // (no FK / local Customer model). Display layer reads the customer
+        // name via `carbon_remote.v1_customers` FDW or REST as needed.
       },
       // Fieldkit multi-tenancy: customer-role users see only their own assets.
       // CUSTOMER must `includeRentable` here so the rentable detail page

@@ -1,29 +1,29 @@
 /**
- * Carbon Sync — Upsert Service
+ * Carbon Sync — Upsert Service (FDW edition)
  *
- * Idempotent handlers that translate Carbon's webhook events into shelf's
- * local mirror (`Customer` table + `User` rows tagged with
- * `fieldkitCustomerId`). Safe to call repeatedly with the same payload.
+ * Three categories of side effects, all triggered by Carbon webhooks:
  *
- * Carbon emits events on three tables:
+ * 1. **Contact ↔ User provisioning** — Carbon `customerContact` events drive
+ *    creation/removal of Shelf User rows so customer contacts can sign in.
+ *    Carbon `contact` UPDATE events refresh email/name on the matching User.
  *
- *   - `customer`         → master record. We mirror to `Customer`.
- *   - `customerContact`  → junction linking a contact to a customer. INSERT
- *                          provisions a shelf User; DELETE clears the link.
- *   - `contact`          → contact master (email/name). UPDATE refreshes
- *                          the matching shelf User.
+ * 2. **Consumable Asset provisioning** — Carbon `item` events with
+ *    `visibleInShelf = true` drive upsert/archive of CONSUMABLE Asset rows.
+ *    INSTANCE Asset provisioning happens through a separate Shelf API
+ *    endpoint when Carbon's intake flow lands; not handled here.
+ *
+ * 3. **Customer master events** — acked but not mirrored. Customer fields
+ *    are read live via the `carbon_remote.v1_customers` foreign view.
  *
  * Concurrency: Carbon webhooks can arrive faster than reconciliation runs.
- * We use Postgres upserts on unique keys
- * (`(organizationId, carbonCustomerId)` and `User.carbonContactId`) so
- * concurrent calls collapse to last-writer-wins, which matches Carbon's
- * source-of-truth model.
+ * Postgres upserts on unique keys (`User.carbonContactId`,
+ * `Asset.carbonPartId`-scoped lookups) collapse concurrent calls to
+ * last-writer-wins, matching Carbon's source-of-truth model.
  *
  * @see {@link file://./types.ts}              Shapes
- * @see {@link file://./client.server.ts}      Carbon Supabase client
+ * @see {@link file://./client.server.ts}      Carbon REST client
  * @see {@link file://./invite.server.ts}      First-contact magic-link invite
  * @see {@link file://./reconciliation.server.ts} Nightly cron entrypoint
- * @see {@link file://./webhook.server.ts}     Webhook entry point
  */
 
 import { OrganizationRoles } from "@prisma/client";
@@ -31,14 +31,11 @@ import { OrganizationRoles } from "@prisma/client";
 import { db } from "~/database/db.server";
 import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
+import { Logger } from "~/utils/logger";
 
-import { fetchContactInCustomer, fetchCustomerById } from "./client.server";
+import { fetchContactInCustomer } from "./client.server";
 import { sendCustomerContactInvite } from "./invite.server";
-import type {
-  CarbonContact,
-  CarbonCustomer,
-  CarbonCustomerContact,
-} from "./types";
+import type { CarbonContact, CarbonCustomerContact, CarbonItem } from "./types";
 
 /**
  * Resolves the shelf Organization that hosts customer tenancy. We fail
@@ -58,167 +55,28 @@ function getPrimaryOrganizationId(): string {
 }
 
 // =============================================================================
-// Customer master upserts
-// =============================================================================
-
-/**
- * Upserts a customer record from Carbon into shelf's mirror.
- *
- * Carbon doesn't have an `archived` boolean — it uses `mergedIntoCustomerId`
- * as a soft-archive signal. We mirror that to `Customer.status = ARCHIVED`.
- * Hard `DELETE` events go through {@link archiveCustomerFromCarbon} instead.
- *
- * `Customer.billingEmail` is left untouched here; it gets populated lazily
- * the first time a contact for this customer syncs (see
- * {@link upsertContactLink}).
- *
- * @returns The resulting shelf `Customer.id`.
- */
-export async function upsertCustomerFromCarbon(carbon: CarbonCustomer) {
-  const organizationId = getPrimaryOrganizationId();
-
-  const isMerged = Boolean(carbon.mergedIntoCustomerId);
-  const status = isMerged ? "ARCHIVED" : "ACTIVE";
-  const archivedAt = isMerged ? new Date() : null;
-
-  const customer = await db.customer.upsert({
-    where: {
-      organizationId_carbonCustomerId: {
-        organizationId,
-        carbonCustomerId: carbon.id,
-      },
-    },
-    create: {
-      organizationId,
-      carbonCustomerId: carbon.id,
-      displayName: carbon.name,
-      status,
-      archivedAt,
-      syncedAt: new Date(),
-    },
-    update: {
-      displayName: carbon.name,
-      status,
-      // Only stamp archivedAt the first time the customer is archived; clear
-      // it if Carbon un-archives. Avoids "archive timestamp keeps moving".
-      archivedAt,
-      syncedAt: new Date(),
-    },
-    select: { id: true },
-  });
-
-  return customer.id;
-}
-
-/**
- * Upsert variant for the REST backfill path, where Carbon's list endpoint
- * only returns `{ id, name }` (no merge state). Used by reconciliation and
- * by the contact-link race-condition recovery in {@link upsertContactLink}.
- *
- * Status defaults to ACTIVE. If the customer is actually archived/merged in
- * Carbon, the next webhook UPDATE event will set the correct status.
- */
-export async function upsertCustomerFromCarbonLite(args: {
-  carbonCustomerId: string;
-  displayName: string;
-}) {
-  const organizationId = getPrimaryOrganizationId();
-  const customer = await db.customer.upsert({
-    where: {
-      organizationId_carbonCustomerId: {
-        organizationId,
-        carbonCustomerId: args.carbonCustomerId,
-      },
-    },
-    create: {
-      organizationId,
-      carbonCustomerId: args.carbonCustomerId,
-      displayName: args.displayName,
-      status: "ACTIVE",
-      syncedAt: new Date(),
-    },
-    update: {
-      displayName: args.displayName,
-      syncedAt: new Date(),
-    },
-    select: { id: true },
-  });
-  return customer.id;
-}
-
-/**
- * Marks a customer as archived in shelf. Used for Carbon `customer` DELETE
- * events. Hard-delete is intentionally avoided — historical billing data
- * must remain resolvable.
- */
-export async function archiveCustomerFromCarbon(carbonCustomerId: string) {
-  const organizationId = getPrimaryOrganizationId();
-  await db.customer.updateMany({
-    where: { organizationId, carbonCustomerId },
-    data: {
-      status: "ARCHIVED",
-      archivedAt: new Date(),
-      syncedAt: new Date(),
-    },
-  });
-}
-
-// =============================================================================
 // Customer ↔ Contact link (junction events)
 // =============================================================================
 
 /**
  * Handles a `customerContact` INSERT/UPDATE event. The junction payload
- * carries only ids; we fetch the parent customer + the contact details
- * from Carbon, ensure both mirror rows exist, and link them.
+ * carries only ids; we fetch the contact details from Carbon's REST API
+ * and ensure a Shelf User exists with the right `carbonCustomerId` link
+ * and CUSTOMER role.
  *
  * Side effects:
- *   1. Customer row upserted (if not already present)
- *   2. User row upserted with `fieldkitCustomerId = customer.id`
- *   3. UserOrganization upserted with role CUSTOMER
- *   4. CustomerContactPermission upserted with conservative defaults
- *   5. TeamMember row created (so booking flows that key on TeamMember work)
- *   6. Magic-link invite sent if the User is brand-new
+ *   1. User row upserted with `carbonCustomerId`, `carbonContactId`
+ *   2. UserOrganization with role CUSTOMER ensured
+ *   3. CustomerContactPermission row with conservative defaults
+ *   4. TeamMember row created (booking flows key on TeamMember)
+ *   5. Magic-link invite sent if the User is brand-new
  *
  * @returns The shelf `User.id` of the linked contact.
  */
 export async function upsertContactLink(payload: CarbonCustomerContact) {
   const organizationId = getPrimaryOrganizationId();
 
-  // Step 1: ensure the parent Customer exists. The junction event can
-  // arrive before the customer event (rare but observed in practice).
-  let customer = await db.customer.findUnique({
-    where: {
-      organizationId_carbonCustomerId: {
-        organizationId,
-        carbonCustomerId: payload.customerId,
-      },
-    },
-    select: { id: true, status: true },
-  });
-
-  if (!customer) {
-    // Race: junction event arrived before its parent customer event.
-    // Fetch the customer (lite) over REST and upsert a stub; a subsequent
-    // customer webhook will fill in any extra fields.
-    const carbonCustomer = await fetchCustomerById(payload.customerId);
-    if (!carbonCustomer) {
-      throw new ShelfError({
-        cause: null,
-        message: `Carbon customer ${payload.customerId} not found while syncing contact link.`,
-        additionalData: { carbonCustomerId: payload.customerId },
-        label: "Carbon Sync",
-      });
-    }
-    const upsertedId = await upsertCustomerFromCarbonLite({
-      carbonCustomerId: carbonCustomer.id,
-      displayName: carbonCustomer.name,
-    });
-    customer = { id: upsertedId, status: "ACTIVE" };
-  }
-
-  // Step 2: fetch contact details. The junction row only has ids, so we
-  // hit Carbon's REST endpoint scoped to the parent customer.
+  // Fetch contact details (the junction row only has ids).
   const carbonContact = await fetchContactInCustomer({
     carbonCustomerId: payload.customerId,
     carbonContactId: payload.contactId,
@@ -237,7 +95,7 @@ export async function upsertContactLink(payload: CarbonCustomerContact) {
 
   return upsertUserFromContact({
     organizationId,
-    customerId: customer.id,
+    carbonCustomerId: payload.customerId,
     carbonContact,
   });
 }
@@ -251,7 +109,7 @@ export async function removeContactLink(payload: CarbonCustomerContact) {
   const organizationId = getPrimaryOrganizationId();
   const user = await db.user.findUnique({
     where: { carbonContactId: payload.contactId },
-    select: { id: true, fieldkitCustomerId: true },
+    select: { id: true, carbonCustomerId: true },
   });
   if (!user) return;
 
@@ -259,21 +117,12 @@ export async function removeContactLink(payload: CarbonCustomerContact) {
   // customer the junction row referenced. Prevents a stale junction
   // delete from clobbering a contact who was reassigned to a different
   // customer in the meantime.
-  const targetCustomer = await db.customer.findUnique({
-    where: {
-      organizationId_carbonCustomerId: {
-        organizationId,
-        carbonCustomerId: payload.customerId,
-      },
-    },
-    select: { id: true },
-  });
-  if (!targetCustomer || user.fieldkitCustomerId !== targetCustomer.id) return;
+  if (user.carbonCustomerId !== payload.customerId) return;
 
   await db.$transaction([
     db.user.update({
       where: { id: user.id },
-      data: { fieldkitCustomerId: null },
+      data: { carbonCustomerId: null },
     }),
     db.customerContactPermission.deleteMany({ where: { userId: user.id } }),
     db.userOrganization.updateMany({
@@ -289,9 +138,7 @@ export async function removeContactLink(payload: CarbonCustomerContact) {
 
 /**
  * Handles a `contact` UPDATE event. If a shelf User is linked to this
- * Carbon contact, its email/name fields are refreshed. INSERT/DELETE on
- * the `contact` table by itself doesn't matter to shelf — the `customerContact`
- * junction is the trigger for provisioning.
+ * Carbon contact, its email/name fields are refreshed.
  */
 export async function updateUserFromContact(carbon: CarbonContact) {
   const user = await db.user.findUnique({
@@ -303,10 +150,6 @@ export async function updateUserFromContact(carbon: CarbonContact) {
   await db.user.update({
     where: { id: user.id },
     data: {
-      // Don't lower-case the new email here — `User.email` is unique and
-      // a stored email mismatch with Carbon would create drift on every
-      // subsequent sync. Carbon already lowercases; if not, this drifts
-      // once and then stabilises.
       email: carbon.email,
       firstName: carbon.firstName,
       lastName: carbon.lastName,
@@ -320,24 +163,22 @@ export async function updateUserFromContact(carbon: CarbonContact) {
 
 /**
  * Internal helper that mirrors a single Carbon contact into a shelf User
- * linked to a shelf Customer. Used by both the webhook path
- * ({@link upsertContactLink}) and the reconciliation path.
+ * linked (by text reference) to a Carbon customer id. Used by both the
+ * webhook path ({@link upsertContactLink}) and the reconciliation path.
  *
  * Idempotent. Returns the shelf `User.id`.
  */
 export async function upsertUserFromContact(args: {
   organizationId: string;
-  customerId: string;
+  carbonCustomerId: string;
   carbonContact: CarbonContact;
 }) {
-  const { organizationId, customerId, carbonContact } = args;
+  const { organizationId, carbonCustomerId, carbonContact } = args;
 
-  // Step 1: locate the User by carbonContactId, then by email as fallback
-  // (covers the case where a former staff/SSO user becomes a customer
-  // contact and we want to reuse their existing account).
+  // Step 1: locate the User by carbonContactId, then by email as fallback.
   const existingByContactId = await db.user.findUnique({
     where: { carbonContactId: carbonContact.id },
-    select: { id: true, fieldkitCustomerId: true, email: true },
+    select: { id: true, carbonCustomerId: true, email: true },
   });
 
   let user = existingByContactId;
@@ -346,13 +187,10 @@ export async function upsertUserFromContact(args: {
   if (!user) {
     const existingByEmail = await db.user.findUnique({
       where: { email: carbonContact.email.toLowerCase() },
-      select: { id: true, fieldkitCustomerId: true, carbonContactId: true },
+      select: { id: true, carbonCustomerId: true, carbonContactId: true },
     });
 
     if (existingByEmail) {
-      // Refuse to overwrite an existing carbonContactId — that would mean
-      // the same email already maps to a different Carbon contact. Bail
-      // loudly so an admin can investigate.
       if (
         existingByEmail.carbonContactId &&
         existingByEmail.carbonContactId !== carbonContact.id
@@ -373,9 +211,9 @@ export async function upsertUserFromContact(args: {
           carbonContactId: carbonContact.id,
           firstName: carbonContact.firstName,
           lastName: carbonContact.lastName,
-          fieldkitCustomerId: customerId,
+          carbonCustomerId,
         },
-        select: { id: true, fieldkitCustomerId: true, email: true },
+        select: { id: true, carbonCustomerId: true, email: true },
       });
     } else {
       isNewUser = true;
@@ -385,20 +223,17 @@ export async function upsertUserFromContact(args: {
           firstName: carbonContact.firstName,
           lastName: carbonContact.lastName,
           carbonContactId: carbonContact.id,
-          fieldkitCustomerId: customerId,
-          // Bypasses paid-tier checks; we don't run those for customer
-          // contacts anyway.
+          carbonCustomerId,
           createdWithInvite: true,
         },
-        select: { id: true, fieldkitCustomerId: true, email: true },
+        select: { id: true, carbonCustomerId: true, email: true },
       });
     }
-  } else if (user.fieldkitCustomerId !== customerId) {
-    // Contact moved to a different customer.
+  } else if (user.carbonCustomerId !== carbonCustomerId) {
     user = await db.user.update({
       where: { id: user.id },
-      data: { fieldkitCustomerId: customerId },
-      select: { id: true, fieldkitCustomerId: true, email: true },
+      data: { carbonCustomerId },
+      select: { id: true, carbonCustomerId: true, email: true },
     });
   }
 
@@ -451,14 +286,7 @@ export async function upsertUserFromContact(args: {
     });
   }
 
-  // Step 5: lazily backfill Customer.billingEmail if it isn't set yet.
-  // Carbon doesn't have a "primary contact" flag, so we use first-wins.
-  await db.customer.updateMany({
-    where: { id: customerId, billingEmail: null },
-    data: { billingEmail: carbonContact.email.toLowerCase() },
-  });
-
-  // Step 6: send magic-link invite for net-new users. Fire-and-forget; we
+  // Step 5: send magic-link invite for net-new users. Fire-and-forget; we
   // log on failure but never throw, because sync correctness is more
   // important than email deliverability.
   if (isNewUser) {
@@ -466,11 +294,132 @@ export async function upsertUserFromContact(args: {
       userId: user.id,
       email: user.email,
       organizationId,
-      customerId,
+      carbonCustomerId,
     }).catch(() => {
       // Logged inside sendCustomerContactInvite; intentionally swallowed.
     });
   }
 
   return user.id;
+}
+
+// =============================================================================
+// Consumable Asset provisioning (item events)
+// =============================================================================
+
+/**
+ * Returns true if this Carbon item should appear as a CONSUMABLE Asset in
+ * Shelf. Inventory- or Batch-tracked items with `visibleInShelf = true`
+ * qualify. Serial-tracked items don't get one CONSUMABLE Asset — they get
+ * one INSTANCE Asset *per unit* (provisioned via the Shelf intake API,
+ * not here). Non-Inventory items never appear in Shelf.
+ */
+function isConsumableForShelf(item: CarbonItem): boolean {
+  if (!item.visibleInShelf) return false;
+  if (!item.active) return false;
+  if (item.blocked) return false;
+  return (
+    item.itemTrackingType === "Inventory" || item.itemTrackingType === "Batch"
+  );
+}
+
+/**
+ * Handles `item` INSERT/UPDATE webhook events. Provisions or refreshes a
+ * CONSUMABLE Asset when the item qualifies (see {@link isConsumableForShelf}).
+ * If the item was previously visible but no longer qualifies, archives the
+ * existing CONSUMABLE Asset(s).
+ *
+ * Idempotent: safe to call repeatedly with the same payload.
+ */
+export async function upsertItemForShelf(item: CarbonItem) {
+  const organizationId = getPrimaryOrganizationId();
+
+  if (!isConsumableForShelf(item)) {
+    // Either visibility was turned off, the item was deactivated, or it's a
+    // serial-tracked item we don't mint a CONSUMABLE for. Archive any
+    // existing CONSUMABLE row that points at this carbonPartId so the
+    // booking forms stop offering it.
+    await db.asset.updateMany({
+      where: {
+        organizationId,
+        carbonPartId: item.id,
+        kind: "CONSUMABLE",
+      },
+      data: {
+        availableToBook: false,
+      },
+    });
+    return null;
+  }
+
+  // We need a User to attribute the row to. Use the org owner so the
+  // resulting Asset.userId is always valid even when no human is logged in
+  // during the webhook delivery.
+  const owner = await db.organization.findUnique({
+    where: { id: organizationId },
+    select: { userId: true },
+  });
+  if (!owner) {
+    throw new ShelfError({
+      cause: null,
+      message: `Primary organization ${organizationId} not found while syncing Carbon item.`,
+      label: "Carbon Sync",
+    });
+  }
+
+  // Find existing CONSUMABLE Asset for this item, or create one.
+  const existing = await db.asset.findFirst({
+    where: {
+      organizationId,
+      carbonPartId: item.id,
+      kind: "CONSUMABLE",
+    },
+    select: { id: true },
+  });
+
+  if (existing) {
+    await db.asset.update({
+      where: { id: existing.id },
+      data: {
+        title: item.name,
+        description: item.description ?? undefined,
+        thumbnailImage: item.thumbnailUrl ?? undefined,
+        availableToBook: true,
+      },
+    });
+    return existing.id;
+  }
+
+  const created = await db.asset.create({
+    data: {
+      organizationId,
+      userId: owner.userId,
+      title: item.name,
+      description: item.description,
+      thumbnailImage: item.thumbnailUrl,
+      kind: "CONSUMABLE",
+      carbonPartId: item.id,
+      availableToBook: true,
+    },
+    select: { id: true },
+  });
+
+  Logger.info("[Carbon Sync] Provisioned CONSUMABLE asset", {
+    assetId: created.id,
+    carbonPartId: item.id,
+  });
+  return created.id;
+}
+
+/**
+ * Handles `item` DELETE webhook events. Archives any matching CONSUMABLE
+ * Assets — never hard-deletes, since historical bookings/audit events
+ * reference them.
+ */
+export async function archiveItemFromShelf(carbonPartId: string) {
+  const organizationId = getPrimaryOrganizationId();
+  await db.asset.updateMany({
+    where: { organizationId, carbonPartId, kind: "CONSUMABLE" },
+    data: { availableToBook: false },
+  });
 }

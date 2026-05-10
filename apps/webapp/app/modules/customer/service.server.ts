@@ -1,111 +1,148 @@
 /**
- * Customer Admin Service
+ * Customer Admin Service (FDW edition)
  *
  * Read + light-write operations for the Fieldkit customer admin pages
- * (`/customers`, `/customers/$id`). Customer master data is *read-only* in
- * shelf — Carbon is the source of truth and any edits there flow back via
- * the carbon-sync webhook. The only writes performed here are on
- * `CustomerContactPermission` toggles, which are shelf-local.
+ * (`/customers`, `/customers/$id`).
  *
- * @see {@link file://./../carbon-sync/service.server.ts} Customer mirror writes
+ * **Customer master data lives in Carbon ERP** and is read via Carbon's
+ * REST API (`/api/sales/*`). The previous local `Customer` mirror table
+ * was dropped — Shelf only stores text references to Carbon ids on the
+ * `User` and `Asset` tables.
+ *
+ * Local writes are limited to:
+ *   - `CustomerContactPermission` toggles (Shelf-local granular policy)
+ *   - `User.carbonCustomerId` link (when reassigning a contact, rare)
+ *
+ * Carbon REST endpoint constraints:
+ *   - `GET /api/sales/customers` returns `{ id, name }` only — minimal.
+ *   - `GET /api/sales/customer-contacts/:customerId` returns the full
+ *     junction with nested contact + user objects.
+ *
+ * @see {@link file://./../carbon-sync/client.server.ts} REST client
  * @see {@link file://./../../routes/_layout+/customers._index.tsx} List route
  * @see {@link file://./../../routes/_layout+/customers.$customerId.tsx} Detail route
  */
 
-import type { CustomerContactPermission, Prisma } from "@prisma/client";
+import { OrganizationRoles } from "@prisma/client";
 
 import { db } from "~/database/db.server";
+import {
+  fetchCustomerById,
+  listCustomerContacts,
+  listCustomers as listCarbonCustomers,
+} from "~/modules/carbon-sync/client.server";
+import type { CarbonCustomerLite } from "~/modules/carbon-sync/client.server";
 import { ShelfError } from "~/utils/error";
 
 /**
- * Lists Carbon-synced customers in an organization, optionally filtered by
- * status / search. Sorts archived to the bottom by default.
+ * Lists Carbon customers in the Fieldkit company, with Shelf-side counters
+ * (number of provisioned contact Users, number of stored Assets) merged in.
+ *
+ * `search` filters case-insensitively against the customer name. Pagination
+ * is offset/limit; Carbon's list endpoint returns the full set, so we
+ * paginate client-side.
  */
 export async function listCustomers(args: {
   organizationId: string;
   search?: string;
-  includeArchived?: boolean;
   page?: number;
   perPage?: number;
 }) {
-  const {
-    organizationId,
-    search,
-    includeArchived = false,
-    page = 1,
-    perPage = 25,
-  } = args;
+  const { organizationId, search, page = 1, perPage = 25 } = args;
 
-  const where: Prisma.CustomerWhereInput = {
-    organizationId,
-    ...(includeArchived ? {} : { status: "ACTIVE" }),
-    ...(search
-      ? {
-          OR: [
-            { displayName: { contains: search, mode: "insensitive" } },
-            { billingEmail: { contains: search, mode: "insensitive" } },
-            { carbonCustomerId: { contains: search, mode: "insensitive" } },
-          ],
-        }
-      : {}),
-  };
+  const all = await listCarbonCustomers();
 
-  const [customers, total] = await Promise.all([
-    db.customer.findMany({
-      where,
-      orderBy: [
-        { status: "asc" }, // ACTIVE before ARCHIVED alphabetically
-        { displayName: "asc" },
-      ],
-      skip: (page - 1) * perPage,
-      take: perPage,
-      select: {
-        id: true,
-        displayName: true,
-        billingEmail: true,
-        status: true,
-        carbonCustomerId: true,
-        syncedAt: true,
-        archivedAt: true,
-        _count: {
-          select: { contacts: true, assets: true },
+  const filtered = search
+    ? all.filter((c) =>
+        c.name.toLowerCase().includes(search.trim().toLowerCase())
+      )
+    : all;
+
+  const sorted = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  const total = sorted.length;
+  const slice = sorted.slice((page - 1) * perPage, page * perPage);
+  const ids = slice.map((c) => c.id);
+
+  // Batch local counters in two queries (independent of Carbon RTT).
+  const [contactCounts, assetCounts] = await Promise.all([
+    db.user.groupBy({
+      by: ["carbonCustomerId"],
+      where: {
+        carbonCustomerId: { in: ids },
+        userOrganizations: {
+          some: {
+            organizationId,
+            roles: { has: OrganizationRoles.CUSTOMER },
+          },
         },
       },
+      _count: { _all: true },
     }),
-    db.customer.count({ where }),
+    db.asset.groupBy({
+      by: ["carbonCustomerId"],
+      where: { organizationId, carbonCustomerId: { in: ids } },
+      _count: { _all: true },
+    }),
   ]);
+
+  const contactCountByCustomer = new Map<string, number>();
+  for (const row of contactCounts) {
+    if (row.carbonCustomerId)
+      contactCountByCustomer.set(row.carbonCustomerId, row._count._all);
+  }
+  const assetCountByCustomer = new Map<string, number>();
+  for (const row of assetCounts) {
+    if (row.carbonCustomerId)
+      assetCountByCustomer.set(row.carbonCustomerId, row._count._all);
+  }
+
+  const customers = slice.map((c) => ({
+    id: c.id,
+    displayName: c.name,
+    contactCount: contactCountByCustomer.get(c.id) ?? 0,
+    assetCount: assetCountByCustomer.get(c.id) ?? 0,
+  }));
 
   return { customers, total, page, perPage };
 }
 
 /**
- * Fetches a single customer with its contact list and a small slice of asset
- * stats. Throws 404 if the customer doesn't exist in this org.
+ * Detail row shape returned by {@link getCustomerDetail}.
+ */
+export type CustomerDetail = {
+  id: string;
+  displayName: string;
+  contacts: Array<{
+    /** Shelf User id (null when the Carbon contact has no shelf User yet). */
+    userId: string | null;
+    carbonContactId: string;
+    email: string;
+    firstName: string | null;
+    lastName: string | null;
+    permission: {
+      canRequestShipment: boolean;
+      canRequestReturn: boolean;
+      canRentInventory: boolean;
+      canViewBilling: boolean;
+      canManageOtherContacts: boolean;
+    } | null;
+  }>;
+  assetCount: number;
+};
+
+/**
+ * Fetches a single Carbon customer + its contacts (joined with their Shelf
+ * Users, if provisioned). Throws 404 if Carbon doesn't recognise the id.
  */
 export async function getCustomerDetail(args: {
   organizationId: string;
-  customerId: string;
-}) {
-  const customer = await db.customer.findFirst({
-    where: { id: args.customerId, organizationId: args.organizationId },
-    include: {
-      contacts: {
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          carbonContactId: true,
-          customerContactPermission: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: "asc" },
-      },
-      _count: { select: { assets: true } },
-    },
-  });
+  carbonCustomerId: string;
+}): Promise<CustomerDetail> {
+  const { organizationId, carbonCustomerId } = args;
 
-  if (!customer) {
+  const carbon: CarbonCustomerLite | null =
+    await fetchCustomerById(carbonCustomerId);
+  if (!carbon) {
     throw new ShelfError({
       cause: null,
       title: "Customer not found",
@@ -118,39 +155,80 @@ export async function getCustomerDetail(args: {
     });
   }
 
-  return customer;
+  const carbonContacts = await listCustomerContacts(carbonCustomerId);
+
+  // Shelf Users for these contacts, with permission rows.
+  const shelfUsers = await db.user.findMany({
+    where: {
+      carbonContactId: { in: carbonContacts.map((c) => c.contactId) },
+    },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      carbonContactId: true,
+      customerContactPermission: true,
+    },
+  });
+  const userByContactId = new Map(
+    shelfUsers
+      .filter((u) => u.carbonContactId)
+      .map((u) => [u.carbonContactId as string, u])
+  );
+
+  const assetCount = await db.asset.count({
+    where: { organizationId, carbonCustomerId },
+  });
+
+  const contacts: CustomerDetail["contacts"] = carbonContacts.map((row) => {
+    const user = userByContactId.get(row.contactId);
+    return {
+      userId: user?.id ?? null,
+      carbonContactId: row.contactId,
+      email: user?.email ?? row.contact.email,
+      firstName: user?.firstName ?? row.contact.firstName,
+      lastName: user?.lastName ?? row.contact.lastName,
+      permission: user?.customerContactPermission ?? null,
+    };
+  });
+
+  return {
+    id: carbon.id,
+    displayName: carbon.name,
+    contacts,
+    assetCount,
+  };
 }
 
 /**
  * Updates one contact's `CustomerContactPermission` toggles. Caller is
  * responsible for verifying the current admin has rights (we expect
  * `requirePermission({ entity: customer, action: update })` upstream).
- *
- * The contact must belong to a customer in the given organization — we
- * cross-check to prevent any URL-id swapping from updating a stranger's
- * permissions.
  */
 export async function updateContactPermissions(args: {
   organizationId: string;
-  customerId: string;
+  carbonCustomerId: string;
   contactUserId: string;
-  patch: Partial<
-    Pick<
-      CustomerContactPermission,
-      | "canRequestShipment"
-      | "canRequestReturn"
-      | "canRentInventory"
-      | "canViewBilling"
-      | "canManageOtherContacts"
-    >
-  >;
+  patch: {
+    canRequestShipment?: boolean;
+    canRequestReturn?: boolean;
+    canRentInventory?: boolean;
+    canViewBilling?: boolean;
+    canManageOtherContacts?: boolean;
+  };
 }) {
-  // Cross-check linkage. One query, fails closed.
+  // Cross-check linkage before writing.
   const contact = await db.user.findFirst({
     where: {
       id: args.contactUserId,
-      fieldkitCustomerId: args.customerId,
-      fieldkitCustomer: { organizationId: args.organizationId },
+      carbonCustomerId: args.carbonCustomerId,
+      userOrganizations: {
+        some: {
+          organizationId: args.organizationId,
+          roles: { has: OrganizationRoles.CUSTOMER },
+        },
+      },
     },
     select: { id: true },
   });

@@ -19,12 +19,9 @@ import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 import { QueueNames, scheduler } from "~/utils/scheduler.server";
 
-import { fetchContactInCustomer, fetchCustomerById } from "./client.server";
+import { fetchContactInCustomer } from "./client.server";
 import { reconcileAll } from "./reconciliation.server";
-import {
-  upsertCustomerFromCarbonLite,
-  upsertUserFromContact,
-} from "./service.server";
+import { upsertUserFromContact } from "./service.server";
 import type { CarbonSyncJob } from "./types";
 
 /**
@@ -48,23 +45,6 @@ async function runJob(job: CarbonSyncJob) {
       await reconcileAll(job);
       return;
 
-    case "upsert-customer": {
-      const carbon = await fetchCustomerById(job.carbonCustomerId);
-      if (!carbon) {
-        throw new ShelfError({
-          cause: null,
-          message: `Carbon customer ${job.carbonCustomerId} not found during sync`,
-          additionalData: { carbonCustomerId: job.carbonCustomerId },
-          label: "Carbon Sync",
-        });
-      }
-      await upsertCustomerFromCarbonLite({
-        carbonCustomerId: carbon.id,
-        displayName: carbon.name,
-      });
-      return;
-    }
-
     case "upsert-contact": {
       if (!FIELDKIT_PRIMARY_ORGANIZATION_ID) {
         throw new ShelfError({
@@ -80,11 +60,10 @@ async function runJob(job: CarbonSyncJob) {
       const user = await db.user.findUnique({
         where: { carbonContactId: job.carbonContactId },
         select: {
-          fieldkitCustomerId: true,
-          fieldkitCustomer: { select: { carbonCustomerId: true } },
+          carbonCustomerId: true,
         },
       });
-      if (!user?.fieldkitCustomerId || !user.fieldkitCustomer) {
+      if (!user?.carbonCustomerId) {
         Logger.warn(
           "[Carbon Sync] upsert-contact: no shelf user yet; skipping",
           { carbonContactId: job.carbonContactId }
@@ -92,7 +71,7 @@ async function runJob(job: CarbonSyncJob) {
         return;
       }
       const carbon = await fetchContactInCustomer({
-        carbonCustomerId: user.fieldkitCustomer.carbonCustomerId,
+        carbonCustomerId: user.carbonCustomerId,
         carbonContactId: job.carbonContactId,
       });
       if (!carbon) {
@@ -105,7 +84,7 @@ async function runJob(job: CarbonSyncJob) {
       }
       await upsertUserFromContact({
         organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
-        customerId: user.fieldkitCustomerId,
+        carbonCustomerId: user.carbonCustomerId,
         carbonContact: carbon,
       });
       return;

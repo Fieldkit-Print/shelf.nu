@@ -3,8 +3,9 @@
  *
  * Admin action endpoint that backs both the customer detail page and the
  * asset list bulk-action menu. Accepts an `intent` of either
- * `assign-customer` (set / clear `Asset.customerId`) or `set-rentable`
- * (toggle `Asset.rentable` on Fieldkit-owned inventory).
+ * `assign-customer` (set / clear `Asset.carbonCustomerId` — text reference
+ * into Carbon, no FK) or `set-rentable` (toggle `Asset.rentable` on
+ * Fieldkit-owned inventory).
  *
  * @see {@link file://./../../modules/customer/asset-assignment.server.ts}
  */
@@ -33,8 +34,8 @@ const PayloadSchema = z.discriminatedUnion("intent", [
       (v) => (typeof v === "string" ? v.split(",").filter(Boolean) : v),
       z.array(z.string()).min(1, "At least one asset is required")
     ),
-    /** Empty string clears the link. */
-    customerId: z.string().nullable().default(null),
+    /** Empty string clears the link. Carbon customer id (text reference). */
+    carbonCustomerId: z.string().nullable().default(null),
   }),
   z.object({
     intent: z.literal("set-rentable"),
@@ -69,9 +70,9 @@ export async function action({ context, request }: ActionFunctionArgs) {
       count = await bulkAssignAssetsToCustomer({
         organizationId,
         assetIds: payload.assetIds,
-        customerId: payload.customerId || null,
+        carbonCustomerId: payload.carbonCustomerId || null,
       });
-      title = payload.customerId
+      title = payload.carbonCustomerId
         ? "Assets assigned to customer"
         : "Assets released to Fieldkit inventory";
     } else {

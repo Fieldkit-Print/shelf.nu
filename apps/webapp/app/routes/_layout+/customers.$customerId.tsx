@@ -1,12 +1,13 @@
 /**
- * Customers Admin — Detail
+ * Customers Admin — Detail (FDW edition)
  *
- * Shows a single Carbon-synced customer with its contact list. Each contact
- * row exposes the granular `CustomerContactPermission` toggles via a small
- * inline form; submitting POSTs back to this same route's action.
+ * Shows a single Carbon customer (read live from Carbon's REST API) with
+ * its contact list (joined with provisioned Shelf Users). Each contact row
+ * exposes the granular `CustomerContactPermission` toggles via an inline
+ * form that POSTs back to this route.
  *
- * Permissions: ADMIN/OWNER only. Customer master data (name, billingEmail,
- * archived state) is read-only — Carbon owns it.
+ * Permissions: ADMIN/OWNER only. Customer master data (name) is read-only —
+ * Carbon owns it.
  *
  * @see {@link file://./customers._index.tsx} List
  * @see {@link file://./../../modules/customer/service.server.ts} Data layer
@@ -17,12 +18,12 @@ import type {
   LoaderFunctionArgs,
   MetaFunction,
 } from "react-router";
-import { Form, Link, data, useLoaderData } from "react-router";
+import { data, Form, Link, useLoaderData } from "react-router";
 import { z } from "zod";
 
 import type { HeaderData } from "~/components/layout/header/types";
-import { Badge } from "~/components/shared/badge";
 import { Button } from "~/components/shared/button";
+import type { CustomerDetail } from "~/modules/customer/service.server";
 import {
   getCustomerDetail,
   updateContactPermissions,
@@ -51,7 +52,8 @@ const PermissionPatchSchema = z.object({
 export async function loader({ context, request, params }: LoaderFunctionArgs) {
   const authSession = context.getSession();
   const { userId } = authSession;
-  const { customerId } = getParams(params, ParamSchema, {
+  // URL param is the Carbon customer id (text, the canonical reference).
+  const { customerId: carbonCustomerId } = getParams(params, ParamSchema, {
     additionalData: { userId },
   });
 
@@ -63,16 +65,19 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       action: PermissionAction.read,
     });
 
-    const customer = await getCustomerDetail({ organizationId, customerId });
+    const customer = await getCustomerDetail({
+      organizationId,
+      carbonCustomerId,
+    });
 
     const header: HeaderData = {
       title: customer.displayName,
-      subHeading: `Carbon id: ${customer.carbonCustomerId}`,
+      subHeading: `Carbon id: ${customer.id}`,
     };
 
     return { header, customer };
   } catch (cause) {
-    const reason = makeShelfError(cause, { userId, customerId });
+    const reason = makeShelfError(cause, { userId, carbonCustomerId });
     throw data(error(reason), { status: reason.status });
   }
 }
@@ -88,7 +93,7 @@ export const handle = {
 export async function action({ context, request, params }: ActionFunctionArgs) {
   const authSession = context.getSession();
   const { userId } = authSession;
-  const { customerId } = getParams(params, ParamSchema, {
+  const { customerId: carbonCustomerId } = getParams(params, ParamSchema, {
     additionalData: { userId },
   });
 
@@ -102,12 +107,12 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 
     const formData = await request.formData();
     const payload = parseData(formData, PermissionPatchSchema, {
-      additionalData: { customerId },
+      additionalData: { carbonCustomerId },
     });
 
     await updateContactPermissions({
       organizationId,
-      customerId,
+      carbonCustomerId,
       contactUserId: payload.contactUserId,
       patch: {
         canRequestShipment: payload.canRequestShipment ?? false,
@@ -127,12 +132,12 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 
     return { success: true } as const;
   } catch (cause) {
-    const reason = makeShelfError(cause, { userId, customerId });
+    const reason = makeShelfError(cause, { userId, carbonCustomerId });
     return data(error(reason), { status: reason.status });
   }
 }
 
-export default function CustomerDetail() {
+export default function CustomerDetailPage() {
   const { customer } = useLoaderData<typeof loader>();
   const { contacts } = customer;
 
@@ -140,40 +145,22 @@ export default function CustomerDetail() {
     <div className="space-y-6">
       <div className="rounded border border-gray-200 bg-white p-4 md:p-6">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl font-semibold text-gray-900">
-              {customer.displayName}
-            </span>
-            <Badge color={customer.status === "ACTIVE" ? "#12B76A" : "#667085"}>
-              {customer.status}
-            </Badge>
-          </div>
-          <div className="flex flex-col text-xs text-gray-500 md:items-end">
-            <span>
-              Last synced: {new Date(customer.syncedAt).toLocaleString()}
-            </span>
-            {customer.archivedAt ? (
-              <span>
-                Archived at: {new Date(customer.archivedAt).toLocaleString()}
-              </span>
-            ) : null}
+          <span className="text-2xl font-semibold text-gray-900">
+            {customer.displayName}
+          </span>
+          <div className="font-mono text-xs text-gray-500">
+            Carbon id: {customer.id}
           </div>
         </div>
 
-        <dl className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
+        <dl className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
           <div>
-            <dt className="text-xs text-gray-500">Billing email</dt>
-            <dd className="text-gray-900">{customer.billingEmail ?? "—"}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-gray-500">Carbon id</dt>
-            <dd className="font-mono text-xs text-gray-900">
-              {customer.carbonCustomerId}
-            </dd>
+            <dt className="text-xs text-gray-500">Contacts</dt>
+            <dd className="text-gray-900">{contacts.length}</dd>
           </div>
           <div>
             <dt className="text-xs text-gray-500">Stored items</dt>
-            <dd className="text-gray-900">{customer._count.assets}</dd>
+            <dd className="text-gray-900">{customer.assetCount}</dd>
           </div>
         </dl>
       </div>
@@ -189,12 +176,12 @@ export default function CustomerDetail() {
         </div>
         {contacts.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-gray-500 md:px-6">
-            No contacts synced yet.
+            No contacts in Carbon for this customer yet.
           </p>
         ) : (
           <ul>
             {contacts.map((contact) => (
-              <ContactRow key={contact.id} contact={contact} />
+              <ContactRow key={contact.carbonContactId} contact={contact} />
             ))}
           </ul>
         )}
@@ -203,18 +190,15 @@ export default function CustomerDetail() {
   );
 }
 
-type ContactRowProps = {
-  contact: ReturnType<
-    typeof useLoaderData<typeof loader>
-  >["customer"]["contacts"][number];
-};
+type ContactRowProps = { contact: CustomerDetail["contacts"][number] };
 
 function ContactRow({ contact }: ContactRowProps) {
   const fullName = [contact.firstName, contact.lastName]
     .filter(Boolean)
     .join(" ")
     .trim();
-  const perm = contact.customerContactPermission;
+  const perm = contact.permission;
+  const canEditPermissions = Boolean(contact.userId);
 
   return (
     <li className="border-b border-gray-50 p-4 md:px-6">
@@ -224,44 +208,54 @@ function ContactRow({ contact }: ContactRowProps) {
             {fullName || contact.email}
           </div>
           <div className="text-xs text-gray-500">
-            {contact.email} · Carbon contact id:{" "}
-            {contact.carbonContactId ?? "—"}
+            {contact.email} · Carbon contact id: {contact.carbonContactId}
+            {!canEditPermissions ? (
+              <span className="ml-2 italic text-amber-600">
+                no shelf user yet
+              </span>
+            ) : null}
           </div>
         </div>
-        <Form
-          method="post"
-          className="flex flex-wrap items-center gap-3 text-sm"
-        >
-          <input type="hidden" name="contactUserId" value={contact.id} />
-          <PermToggle
-            name="canRequestShipment"
-            label="Request shipment"
-            checked={perm?.canRequestShipment ?? false}
-          />
-          <PermToggle
-            name="canRequestReturn"
-            label="Request return"
-            checked={perm?.canRequestReturn ?? false}
-          />
-          <PermToggle
-            name="canRentInventory"
-            label="Rent inventory"
-            checked={perm?.canRentInventory ?? false}
-          />
-          <PermToggle
-            name="canViewBilling"
-            label="View billing"
-            checked={perm?.canViewBilling ?? false}
-          />
-          <PermToggle
-            name="canManageOtherContacts"
-            label="Manage contacts"
-            checked={perm?.canManageOtherContacts ?? false}
-          />
-          <Button type="submit" size="sm" variant="secondary">
-            Save
-          </Button>
-        </Form>
+        {canEditPermissions ? (
+          <Form
+            method="post"
+            className="flex flex-wrap items-center gap-3 text-sm"
+          >
+            <input
+              type="hidden"
+              name="contactUserId"
+              value={contact.userId ?? ""}
+            />
+            <PermToggle
+              name="canRequestShipment"
+              label="Request shipment"
+              checked={perm?.canRequestShipment ?? false}
+            />
+            <PermToggle
+              name="canRequestReturn"
+              label="Request return"
+              checked={perm?.canRequestReturn ?? false}
+            />
+            <PermToggle
+              name="canRentInventory"
+              label="Rent inventory"
+              checked={perm?.canRentInventory ?? false}
+            />
+            <PermToggle
+              name="canViewBilling"
+              label="View billing"
+              checked={perm?.canViewBilling ?? false}
+            />
+            <PermToggle
+              name="canManageOtherContacts"
+              label="Manage contacts"
+              checked={perm?.canManageOtherContacts ?? false}
+            />
+            <Button type="submit" size="sm" variant="secondary">
+              Save
+            </Button>
+          </Form>
+        ) : null}
       </div>
     </li>
   );

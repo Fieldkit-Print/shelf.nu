@@ -28,8 +28,12 @@ export type SendCustomerContactInviteArgs = {
   email: string;
   /** Org id the contact will land in (for telemetry / future routing). */
   organizationId: string;
-  /** Customer id the contact is linked to (for telemetry / future routing). */
-  customerId: string;
+  /**
+   * Carbon customer id the contact is linked to (for telemetry / future
+   * routing). Text reference into Carbon — Shelf doesn't keep a local
+   * Customer mirror in the FDW edition.
+   */
+  carbonCustomerId: string;
 };
 
 /**
