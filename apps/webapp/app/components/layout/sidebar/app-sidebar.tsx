@@ -1,7 +1,6 @@
 import type { ComponentProps } from "react";
 import { ShelfSidebarLogo } from "~/components/marketing/logos";
 import { useSidebarNavItems } from "~/hooks/use-sidebar-nav-items";
-import OrganizationSelector from "./organization-selector";
 import {
   Sidebar,
   SidebarContent,
@@ -25,8 +24,7 @@ export default function AppSidebar(props: AppSidebarProps) {
         <div className="my-2 flex items-center">
           <ShelfSidebarLogo minimized={state === "collapsed"} />
         </div>
-
-        <OrganizationSelector />
+        {/* Fieldkit: org badge removed — single-tenant deployment, Fieldkit logo above covers branding. */}
       </SidebarHeader>
 
       <SidebarContent>
