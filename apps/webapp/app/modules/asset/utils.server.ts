@@ -443,14 +443,40 @@ export const CurrentSearchParamsSchema = z.object({
   currentSearchParams: z.string().optional().nullable(),
 });
 
+/**
+ * Builds the canonical Prisma `Asset` where-clause used by list, bulk, and
+ * search routes. The `customerScope` parameter is the Fieldkit multi-tenancy
+ * extension: callers operating on behalf of a CUSTOMER role user pass the
+ * result of `buildCustomerAssetScope(perm)` so the produced where always
+ * AND-includes the per-customer filter.
+ *
+ * Non-customer callers (staff routes) omit `customerScope` and the helper
+ * behaves identically to the upstream version.
+ *
+ * @param organizationId - Organisation scoping (always applied)
+ * @param currentSearchParams - Serialised URLSearchParams from the request
+ * @param customerScope - Optional CUSTOMER scope fragment from
+ *   `buildCustomerAssetScope`. If non-empty, it is AND-merged with the rest
+ *   of the filters so it cannot be widened by any other clause.
+ */
 export function getAssetsWhereInput({
   organizationId,
   currentSearchParams,
+  customerScope,
 }: {
   organizationId: Asset["organizationId"];
   currentSearchParams?: string | null;
+  customerScope?: Prisma.AssetWhereInput;
 }) {
   const where: Prisma.AssetWhereInput = { organizationId };
+
+  // Apply customer scoping FIRST so it survives any later mutations of `where`.
+  // The merge uses an AND so callers cannot accidentally OR the scope away.
+  const hasCustomerScope =
+    customerScope && Object.keys(customerScope).length > 0;
+  if (hasCustomerScope) {
+    where.AND = [customerScope!];
+  }
 
   if (!currentSearchParams) {
     return where;

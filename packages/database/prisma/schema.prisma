@@ -43,7 +43,7 @@ model User {
   profilePicture        String?
   usedFreeTrial         Boolean @default(false)
   onboarded             Boolean @default(false)
-  customerId            String? @unique // Stripe customer id
+  customerId            String? @unique // Stripe customer id (upstream field, unrelated to Fieldkit Customer below)
   sso                   Boolean @default(false)
   createdWithInvite     Boolean @default(false) // Set to true if the user was created by being invited to a workspace
   skipSubscriptionCheck Boolean @default(false) // Set to true if the user has opted out of subscription checks
@@ -53,6 +53,28 @@ model User {
   // Last selected organization for cross-device workspace persistence
   lastSelectedOrganization   Organization? @relation("lastSelectedOrg", fields: [lastSelectedOrganizationId], references: [id], onDelete: SetNull)
   lastSelectedOrganizationId String?
+
+  // Fieldkit customer link. Named `fieldkitCustomerId` (not `customerId`) to
+  // avoid colliding with the upstream `customerId` field (Stripe), keeping
+  // upstream Shelf-nu merges clean.
+  //
+  // - `null`  → internal Fieldkit staff user (no external customer scoping).
+  // - `set`   → this user is a customer contact synced from Carbon ERP and is
+  //              expected to hold the CUSTOMER role on the Fieldkit org.
+  //
+  // The `requirePermission()` middleware uses this id to inject a hard
+  // `customerId = user.fieldkitCustomerId` filter into every Asset/Booking
+  // query for CUSTOMER role users. See ~/utils/roles.server.ts.
+  fieldkitCustomer   Customer? @relation(fields: [fieldkitCustomerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  fieldkitCustomerId String?
+
+  // Source-of-truth contact id from Carbon ERP. Used by the carbon-sync module
+  // to upsert contact rows idempotently. Globally unique because we expect each
+  // Carbon contact to map to at most one shelf User.
+  carbonContactId String? @unique
+
+  // Per-contact granular permission toggles (only meaningful when fieldkitCustomerId is set).
+  customerContactPermission CustomerContactPermission?
 
   // Datetime
   createdAt DateTime @default(now())
@@ -123,6 +145,8 @@ model User {
   // Indexes for foreign keys
   @@index([tierId])
   @@index([lastSelectedOrganizationId])
+  @@index([fieldkitCustomerId])
+  @@index([carbonContactId])
 }
 
 model UserContact {
@@ -208,6 +232,23 @@ model Asset {
   kit            Kit?         @relation(fields: [kitId], references: [id])
   kitId          String?
 
+  // Customer ownership for Fieldkit storage tenancy.
+  //
+  // - `null` → Fieldkit-owned inventory (internal staff assets, plus rental
+  //             pool when `rentable = true`).
+  // - `set`  → asset is stored on behalf of the referenced Customer. CUSTOMER
+  //             role queries are filtered to `customerId = user.customerId`.
+  //
+  // `onDelete: SetNull` so archiving a customer keeps historical asset records
+  // intact (we still want them visible to staff for billing reconciliation).
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  customerId String?
+
+  // When true, this Fieldkit-owned asset (customerId = null) is rentable by
+  // any customer with `CustomerContactPermission.canRentInventory = true`.
+  // Has no effect on customer-owned assets.
+  rentable Boolean @default(false)
+
   custody      Custody?
   notes        Note[]
   qrCodes      Qr[]
@@ -235,6 +276,11 @@ model Asset {
   @@index([sequentialId], name: "Asset_sequentialId_idx")
   // Index for foreign key
   @@index([userId])
+  // CUSTOMER role queries always filter by (organizationId, customerId);
+  // this composite makes those scans index-only.
+  @@index([organizationId, customerId], name: "Asset_organizationId_customerId_idx")
+  // Rental pool lookups: list rentable Fieldkit-owned inventory across the org.
+  @@index([organizationId, rentable], name: "Asset_organizationId_rentable_idx")
 }
 
 enum AssetStatus {
@@ -755,6 +801,10 @@ model Organization {
   teamMemberNotes     TeamMemberNote[]
   activityEvents      ActivityEvent[]
 
+  // Fieldkit customer tenancy: customers synced from Carbon ERP whose assets
+  // live in this org. Each Customer scopes a set of CUSTOMER-role users.
+  customers Customer[]
+
   // Migration flag to track if sequential IDs have been generated for this organization's existing assets
   hasSequentialIdsMigrated Boolean @default(false)
 
@@ -804,6 +854,10 @@ enum OrganizationRoles {
   BASE
   OWNER
   SELF_SERVICE
+  // External customer contact synced from Carbon ERP. Sees a permissioned
+  // slice of the org scoped to a single Customer record (their employer).
+  // See CustomerContactPermission for per-user granular toggles.
+  CUSTOMER
 }
 
 model SsoDetails {
@@ -1838,4 +1892,124 @@ enum ActivityAction {
   // Kit
   KIT_CREATED
   KIT_UPDATED
+}
+
+// =============================================================================
+// Fieldkit customer tenancy
+// =============================================================================
+//
+// Shelf already supports tenancy at the `Organization` level (each org is a
+// hard-isolated workspace). Fieldkit needs a second axis of tenancy *inside*
+// a single org: the print shop runs one shelf workspace and stores items on
+// behalf of many customers. Each Customer below is a Fieldkit customer mirrored
+// from Carbon ERP. CUSTOMER-role users (synced from Carbon contacts) see only
+// the assets owned by their Customer plus rentable inventory.
+//
+// Source of truth: Carbon ERP. See ~/modules/carbon-sync/* for the sync logic.
+// =============================================================================
+
+/**
+ * Customer status, mirrored from Carbon ERP customer state. ARCHIVED customers
+ * are kept (soft-archived) so historical billing rows and asset records remain
+ * resolvable. Their CUSTOMER users have access revoked at the role layer.
+ */
+enum CustomerStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+/**
+ * Fieldkit customer (mirror of a Carbon ERP customer).
+ *
+ * One row per customer. Carson's print shop is the single shelf Organization;
+ * each Customer row scopes a subset of that org's Assets and a subset of its
+ * CUSTOMER-role Users.
+ *
+ * The carbonCustomerId is unique within an Organization (so the same Carbon
+ * customer can't appear twice in one workspace), and the carbon-sync module
+ * upserts on `(organizationId, carbonCustomerId)`.
+ */
+model Customer {
+  id String @id @default(cuid())
+
+  /** Source-of-truth ID from Carbon ERP. Used as the upsert key for sync. */
+  carbonCustomerId String
+
+  /** Display name shown in the shelf UI. Synced from Carbon. */
+  displayName String
+
+  /** Primary billing email (used for invoices/notifications). Synced from Carbon. */
+  billingEmail String?
+
+  /**
+   * Mirror of Carbon's customer state.
+   *
+   * @see {@link CustomerStatus}
+   */
+  status CustomerStatus @default(ACTIVE)
+
+  /** Free-form notes (operational, not synced from Carbon). */
+  notes String?
+
+  /** Timestamp of the last successful sync from Carbon. */
+  syncedAt DateTime @default(now())
+
+  /** When the customer was archived (mirrors Carbon archive). */
+  archivedAt DateTime?
+
+  // Relationships
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organizationId String
+
+  /** Customer contact users (one per Carbon contact). */
+  contacts User[]
+
+  /** Assets stored on behalf of this customer (Asset.customerId = this.id). */
+  assets Asset[]
+
+  // Datetime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([organizationId, carbonCustomerId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([archivedAt])
+}
+
+/**
+ * Per-contact permission toggles for CUSTOMER-role users.
+ *
+ * A row exists only for users where `User.customerId` is set. Defaults are
+ * conservative: a freshly synced customer contact can request shipment/return
+ * but cannot rent inventory, view billing, or manage other contacts. Internal
+ * admins adjust these via the customer detail page.
+ */
+model CustomerContactPermission {
+  id String @id @default(cuid())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  userId String @unique
+
+  /** Allow this contact to request that stored items be shipped to them. */
+  canRequestShipment Boolean @default(true)
+
+  /** Allow this contact to request that items be returned to Fieldkit. */
+  canRequestReturn Boolean @default(true)
+
+  /** Allow this contact to rent Fieldkit-owned `rentable = true` inventory. */
+  canRentInventory Boolean @default(false)
+
+  /** Allow this contact to view billing summaries for their Customer. */
+  canViewBilling Boolean @default(false)
+
+  /**
+   * Allow this contact to edit other contacts' permissions for the same
+   * Customer (a "primary contact" capability).
+   */
+  canManageOtherContacts Boolean @default(false)
+
+  // Datetime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

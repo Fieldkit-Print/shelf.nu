@@ -403,24 +403,39 @@ export async function getAsset<T extends Prisma.AssetInclude | undefined>({
   userOrganizations,
   request,
   include,
+  customerScope,
 }: Pick<Asset, "id"> & {
   organizationId: Asset["organizationId"];
   userOrganizations?: Pick<UserOrganization, "organizationId">[];
   request?: Request;
   include?: T;
+  /**
+   * Fieldkit multi-tenancy scope. When set, the asset must additionally
+   * satisfy the scope (own customer's, optionally rentable). A miss raises
+   * the same 404 path as a non-existent asset to avoid existence leaks.
+   */
+  customerScope?: Prisma.AssetWhereInput;
 }): Promise<AssetWithInclude<T>> {
   try {
     const otherOrganizationIds = userOrganizations?.map(
       (org) => org.organizationId
     );
 
+    const hasCustomerScope =
+      customerScope && Object.keys(customerScope).length > 0;
+
     const asset = await db.asset.findFirstOrThrow({
       where: {
-        OR: [
-          { id, organizationId },
-          ...(userOrganizations?.length
-            ? [{ id, organizationId: { in: otherOrganizationIds } }]
-            : []),
+        AND: [
+          {
+            OR: [
+              { id, organizationId },
+              ...(userOrganizations?.length
+                ? [{ id, organizationId: { in: otherOrganizationIds } }]
+                : []),
+            ],
+          },
+          ...(hasCustomerScope ? [customerScope!] : []),
         ],
       },
       include: { ...include },
@@ -515,6 +530,14 @@ export async function getAssets(params: {
   hideUnavailableToAddToKit?: boolean;
   assetKitFilter?: string | null;
   availableToBookOnly?: boolean;
+  /**
+   * Fieldkit multi-tenancy scope. Pass the result of
+   * `buildCustomerAssetScope(perm)` from `~/utils/permissions/customer-scope.server`
+   * for any caller that may run on behalf of a CUSTOMER role user. Non-empty
+   * scope is AND-merged into the where clause via `where.AND` so it cannot be
+   * widened by other filters.
+   */
+  customerScope?: Prisma.AssetWhereInput;
 }) {
   let {
     organizationId,
@@ -535,6 +558,7 @@ export async function getAssets(params: {
     extraInclude,
     assetKitFilter,
     availableToBookOnly,
+    customerScope,
   } = params;
 
   try {
@@ -542,6 +566,12 @@ export async function getAssets(params: {
     const take = perPage >= 1 && perPage <= 100 ? perPage : 20;
 
     const where: Prisma.AssetWhereInput = { organizationId };
+
+    if (customerScope && Object.keys(customerScope).length > 0) {
+      // AND-merge so subsequent OR mutations below (search, categories, etc.)
+      // cannot widen the customer scope.
+      where.AND = [customerScope];
+    }
 
     if (availableToBookOnly) {
       where.availableToBook = true;
@@ -2299,6 +2329,7 @@ export async function getPaginatedAndFilterableAssets({
   filters = "",
   isSelfService,
   userId,
+  customerScope,
 }: {
   request: LoaderFunctionArgs["request"];
   organizationId: Organization["id"];
@@ -2311,6 +2342,8 @@ export async function getPaginatedAndFilterableAssets({
 
   isSelfService?: boolean;
   userId?: string;
+  /** See {@link getAssets} `customerScope` parameter docs. */
+  customerScope?: Prisma.AssetWhereInput;
 }) {
   const currentFilterParams = new URLSearchParams(filters || "");
   const searchParams = filters
@@ -2393,6 +2426,7 @@ export async function getPaginatedAndFilterableAssets({
         extraInclude,
         assetKitFilter,
         availableToBookOnly: isSelfService,
+        customerScope,
       }),
     ]);
 

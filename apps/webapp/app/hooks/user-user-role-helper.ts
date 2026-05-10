@@ -18,8 +18,21 @@ export function useUserRoleHelper() {
     roles?.includes(OrganizationRoles.SELF_SERVICE) || false;
   const isBase = roles?.includes(OrganizationRoles.BASE) || false;
 
+  /**
+   * Fieldkit external customer contact (synced from Carbon ERP).
+   * @see project_fieldkit_shelf_tenancy memory
+   */
+  const isCustomer = roles?.includes(OrganizationRoles.CUSTOMER) || false;
+
   /** A lot of actions share the same permissions for base & self service */
   const isBaseOrSelfService = isBase || isSelfService;
+
+  /**
+   * True for any non-staff role: BASE, SELF_SERVICE, or CUSTOMER. Use this to
+   * hide nav items / buttons that are staff-only (e.g., team management,
+   * settings, customer admin pages).
+   */
+  const isRestrictedRole = isBaseOrSelfService || isCustomer;
 
   return {
     roles,
@@ -28,6 +41,8 @@ export function useUserRoleHelper() {
     isAdministratorOrOwner,
     isSelfService,
     isBase,
+    isCustomer,
     isBaseOrSelfService,
+    isRestrictedRole,
   };
 }

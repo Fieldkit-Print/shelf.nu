@@ -68,7 +68,7 @@ export type NavItem =
 export function useSidebarNavItems() {
   const { isAdmin, canUseBookings, subscription, unreadUpdatesCount } =
     useLoaderData<typeof loader>();
-  const { isBaseOrSelfService } = useUserRoleHelper();
+  const { isCustomer, isRestrictedRole } = useUserRoleHelper();
   const currentOrganization = useCurrentOrganization();
   const isPersonalOrganization = isPersonalOrg(currentOrganization);
 
@@ -110,7 +110,7 @@ export function useSidebarNavItems() {
       title: "Home",
       to: "/home",
       Icon: HomeIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
     },
     {
       type: "child",
@@ -129,7 +129,7 @@ export function useSidebarNavItems() {
       title: "Categories",
       to: "/categories",
       Icon: BoxesIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
     },
 
     {
@@ -137,20 +137,21 @@ export function useSidebarNavItems() {
       title: "Tags",
       to: "/tags",
       Icon: TagsIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
     },
     {
       type: "child",
       title: "Locations",
       to: "/locations",
       Icon: MapPinIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
     },
     {
       type: "child",
       title: "Audits",
       to: "/audits",
       Icon: ClipboardCheckIcon,
+      hidden: isCustomer, // CUSTOMER role has no audit permissions
     },
     {
       type: "parent",
@@ -174,26 +175,35 @@ export function useSidebarNavItems() {
       type: "child",
       title: "Reminders",
       Icon: AlarmClockIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
       to: "/reminders",
     },
     {
       type: "child",
       title: "Reports",
       Icon: FileBarChartIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
       to: "/reports",
+    },
+    {
+      type: "child",
+      title: "Customers",
+      Icon: UsersRoundIcon,
+      // Fieldkit-only admin surface (PR5). Staff manage Carbon-synced
+      // customers + their contacts here. Hidden from base/self-service/customer.
+      hidden: isRestrictedRole,
+      to: "/customers",
     },
     {
       type: "label",
       title: "Organization",
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
     },
     {
       type: "parent",
       title: "Team",
       Icon: UsersRoundIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
       children: [
         {
           title: "Users",
@@ -215,7 +225,7 @@ export function useSidebarNavItems() {
       type: "parent",
       title: "Workspace settings",
       Icon: SettingsIcon,
-      hidden: isBaseOrSelfService,
+      hidden: isRestrictedRole,
       children: [
         {
           title: "General",

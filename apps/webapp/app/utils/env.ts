@@ -64,6 +64,22 @@ declare global {
       SHOW_HOW_DID_YOU_FIND_US: string;
       COLLECT_BUSINESS_INTEL: string;
       COOKIE_DOMAIN: string;
+      // Fieldkit ↔ Carbon ERP integration (carbon-sync module).
+      //
+      // Carbon doesn't expose a public REST API; we talk to its Supabase
+      // project directly with a service-role key for backfills/contact lookups.
+      // Webhooks are registered in Carbon's Settings → Webhooks UI and arrive
+      // here with no auth header — we authenticate via a query-string token
+      // (CARBON_WEBHOOK_SECRET) and filter by FIELDKIT_CARBON_COMPANY_ID so
+      // payloads from other Carbon tenants are rejected.
+      CARBON_SUPABASE_URL: string;
+      CARBON_SUPABASE_SERVICE_ROLE_KEY: string;
+      CARBON_WEBHOOK_SECRET: string;
+      FIELDKIT_CARBON_COMPANY_ID: string;
+      // Single shelf organization that hosts customer tenancy. The carbon-sync
+      // module upserts every Carbon customer under this org id. Required when
+      // any of the CARBON_* vars above are set.
+      FIELDKIT_PRIMARY_ORGANIZATION_ID: string;
     }
   }
 }
@@ -177,6 +193,39 @@ export const DATABASE_URL = getEnv("DATABASE_URL");
 export const DIRECT_URL = getEnv("DIRECT_URL", {
   isRequired: false,
 });
+
+/**
+ * Fieldkit ↔ Carbon ERP integration.
+ *
+ * Carbon has no public REST API, so the carbon-sync module talks to its
+ * Supabase project directly with a service-role key for backfills + on-demand
+ * contact lookups. Webhooks are configured in Carbon's UI (Settings →
+ * Webhooks) and arrive at our endpoint with no auth header — we authenticate
+ * via a query-string `?token=` matched against CARBON_WEBHOOK_SECRET, and
+ * filter by FIELDKIT_CARBON_COMPANY_ID to reject events from other Carbon
+ * tenants.
+ *
+ * All five are optional during dev/CI; the carbon-sync module fails fast
+ * when called without them so misconfigured deploys are loud.
+ */
+export const CARBON_SUPABASE_URL = getEnv("CARBON_SUPABASE_URL", {
+  isRequired: false,
+})?.replace(/\/+$/, "");
+export const CARBON_SUPABASE_SERVICE_ROLE_KEY = getEnv(
+  "CARBON_SUPABASE_SERVICE_ROLE_KEY",
+  { isSecret: true, isRequired: false }
+);
+export const CARBON_WEBHOOK_SECRET = getEnv("CARBON_WEBHOOK_SECRET", {
+  isSecret: true,
+  isRequired: false,
+});
+export const FIELDKIT_CARBON_COMPANY_ID = getEnv("FIELDKIT_CARBON_COMPANY_ID", {
+  isRequired: false,
+});
+export const FIELDKIT_PRIMARY_ORGANIZATION_ID = getEnv(
+  "FIELDKIT_PRIMARY_ORGANIZATION_ID",
+  { isRequired: false }
+);
 export const SENTRY_DSN = getEnv("SENTRY_DSN", {
   isSecret: false,
   isRequired: false,

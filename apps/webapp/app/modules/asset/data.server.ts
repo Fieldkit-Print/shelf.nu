@@ -1,6 +1,6 @@
 /** In this file you can find the different ways of fetching data for the asset index. They are either for the simple or advanced mode */
 
-import type { AssetIndexSettings, Kit } from "@prisma/client";
+import type { AssetIndexSettings, Kit, Prisma } from "@prisma/client";
 import { OrganizationRoles } from "@prisma/client";
 import { data, redirect } from "react-router";
 import type { HeaderData } from "~/components/layout/header/types";
@@ -60,6 +60,12 @@ interface Props {
   currentOrganization: OrganizationFromUser;
   user: { firstName: string | null };
   settings: AssetIndexSettings;
+  /**
+   * Fieldkit multi-tenancy scope. Required when the loader may run on behalf
+   * of a CUSTOMER role user; non-customer callers should pass an empty
+   * object. Built via `buildCustomerAssetScope(perm)`.
+   */
+  customerScope?: Prisma.AssetWhereInput;
 }
 
 const searchFieldTooltipText = `
@@ -85,6 +91,7 @@ export async function simpleModeLoader({
   currentOrganization,
   user,
   settings,
+  customerScope,
 }: Props) {
   const { locale, timeZone } = getClientHint(request);
   const isSelfService = role === OrganizationRoles.SELF_SERVICE;
@@ -194,6 +201,7 @@ export async function simpleModeLoader({
           : undefined,
       isSelfService,
       userId,
+      customerScope,
     }),
     getTagsForBookingTagsFilter({
       organizationId,
@@ -337,6 +345,10 @@ export async function advancedModeLoader({
   currentOrganization,
   user,
   settings,
+  // CUSTOMER role can't reach the advanced index (route loader rejects it),
+  // so we accept the prop for API parity but don't apply it. If that
+  // changes, wire it via `generateWhereClause`'s `customerOwnership` arg.
+  customerScope: _customerScope,
 }: Props) {
   const { locale, timeZone } = getClientHint(request);
   const isSelfService = role === OrganizationRoles.SELF_SERVICE;
@@ -418,6 +430,9 @@ export async function advancedModeLoader({
       organizationId,
       organizations,
     }),
+    // Note: CUSTOMER role is blocked from the advanced index (see route loader),
+    // so `customerScope` is not threaded here. If that changes, generateWhereClause
+    // already accepts a `customerOwnership` arg — wire it via a new param here.
     getAdvancedPaginatedAndFilterableAssets({
       request,
       organizationId,

@@ -5,6 +5,10 @@ const ROLE_RANK: Record<OrganizationRoles, number> = {
   [OrganizationRoles.ADMIN]: 2,
   [OrganizationRoles.SELF_SERVICE]: 1,
   [OrganizationRoles.BASE]: 1,
+  // CUSTOMER ranks below BASE: external customer contact, never used as a
+  // promotion target. Demotion checks treat any non-CUSTOMER → CUSTOMER as a
+  // demotion (rank drops to 0).
+  [OrganizationRoles.CUSTOMER]: 0,
 };
 
 /**

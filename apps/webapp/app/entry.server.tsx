@@ -12,6 +12,7 @@ import { registerAddonTrialWorkers } from "./modules/addon-trial/worker.server";
 import { regierAssetWorkers } from "./modules/asset-reminder/worker.server";
 import { registerAuditWorkers } from "./modules/audit/worker.server";
 import { registerBookingWorkers } from "./modules/booking/worker.server";
+import { registerCarbonSyncWorker } from "./modules/carbon-sync/queue.server";
 import { ShelfError } from "./utils/error";
 import { Logger } from "./utils/logger";
 import * as schedulerService from "./utils/scheduler.server";
@@ -76,6 +77,18 @@ schedulerService
               message:
                 "Something went wrong while registering addon trial workers.",
               label: "Scheduler",
+            })
+          );
+        }),
+      registerCarbonSyncWorker()
+        .then(() => console.log("Carbon sync worker registered"))
+        .catch((cause) => {
+          Logger.error(
+            new ShelfError({
+              cause,
+              message:
+                "Something went wrong while registering Carbon sync worker.",
+              label: "Carbon Sync",
             })
           );
         }),

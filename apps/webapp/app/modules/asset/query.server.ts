@@ -32,16 +32,35 @@ export const CUSTOM_FIELD_SEARCH_PATHS = [
  * @param search - Optional search string
  * @param filters - Array of filter objects
  * @param assetIds - Optional array of specific asset IDs to include
+ * @param availableToBookOnly - When true, restrict to assets bookable by self-service
+ * @param customerOwnership - Fieldkit multi-tenancy scope:
+ *   - `undefined` → no restriction (staff routes)
+ *   - `{ kind: "owned"; customerId }` → only assets stored on behalf of that customer
+ *   - `{ kind: "ownedOrRentable"; customerId }` → either owned-by-customer OR
+ *     Fieldkit-owned rentable inventory (for the rental browse view)
  * @returns Prisma.Sql WHERE clause
  */
+export type CustomerOwnershipScope =
+  | { kind: "owned"; customerId: string }
+  | { kind: "ownedOrRentable"; customerId: string };
+
 export function generateWhereClause(
   organizationId: string,
   search: string | null,
   filters: Filter[],
   assetIds?: string[],
-  availableToBookOnly = false
+  availableToBookOnly = false,
+  customerOwnership?: CustomerOwnershipScope
 ): Prisma.Sql {
   let whereClause = Prisma.sql`WHERE a."organizationId" = ${organizationId}`;
+
+  if (customerOwnership) {
+    if (customerOwnership.kind === "owned") {
+      whereClause = Prisma.sql`${whereClause} AND a."customerId" = ${customerOwnership.customerId}`;
+    } else {
+      whereClause = Prisma.sql`${whereClause} AND (a."customerId" = ${customerOwnership.customerId} OR (a."customerId" IS NULL AND a."rentable" = true))`;
+    }
+  }
 
   if (availableToBookOnly) {
     whereClause = Prisma.sql`${whereClause} AND a."availableToBook" = true`;

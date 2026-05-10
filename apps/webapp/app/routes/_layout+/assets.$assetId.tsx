@@ -46,6 +46,7 @@ import {
   parseData,
   safeRedirect,
 } from "~/utils/http.server";
+import { buildCustomerAssetScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -69,12 +70,13 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
   });
 
   try {
-    const { organizationId, userOrganizations } = await requirePermission({
+    const perm = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.asset,
       action: PermissionAction.read,
     });
+    const { organizationId, userOrganizations } = perm;
 
     const asset = await getAsset({
       id,
@@ -85,7 +87,14 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
         custody: { include: { custodian: true } },
         kit: true,
         qrCodes: true,
+        // Fieldkit: surface owning customer (if any) so the detail header
+        // can show "Stored for: <Customer>" / "Rentable" badges.
+        customer: { select: { id: true, displayName: true, status: true } },
       },
+      // Fieldkit multi-tenancy: customer-role users see only their own assets.
+      // CUSTOMER must `includeRentable` here so the rentable detail page
+      // continues to load when they navigate to a rentable item.
+      customerScope: buildCustomerAssetScope(perm, { includeRentable: true }),
     });
 
     const header: HeaderData = {

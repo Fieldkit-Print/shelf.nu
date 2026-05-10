@@ -1,4 +1,8 @@
-import type { SsoDetails } from "@prisma/client";
+import type {
+  CustomerContactPermission,
+  CustomerStatus,
+  SsoDetails,
+} from "@prisma/client";
 import { OrganizationRoles, Roles } from "@prisma/client";
 import { db } from "~/database/db.server";
 import { getSelectedOrganization } from "~/modules/organization/context.server";
@@ -88,30 +92,103 @@ export async function requirePermission({
   const isSelfServiceOrBase =
     role === OrganizationRoles.SELF_SERVICE || role === OrganizationRoles.BASE;
 
+  const isCustomer = role === OrganizationRoles.CUSTOMER;
+
+  /**
+   * Customer-tenancy linkage (Fieldkit only).
+   *
+   * For CUSTOMER role users we MUST resolve the linked `fieldkitCustomerId`
+   * here so every downstream query can scope correctly. Without this id the
+   * caller would either (a) leak other customers' data or (b) return nothing
+   * at all — both worse than failing fast. We also reject sign-in for users
+   * whose Customer record is archived.
+   *
+   * Non-customer roles skip this block entirely (zero extra queries) so the
+   * staff path stays as fast as upstream.
+   */
+  let fieldkitCustomerId: string | null = null;
+  let customerContactPermission: CustomerContactPermission | null = null;
+  let customerStatus: CustomerStatus | null = null;
+
+  if (isCustomer) {
+    const customerUser = await db.user.findUnique({
+      where: { id: userId },
+      select: {
+        fieldkitCustomerId: true,
+        customerContactPermission: true,
+        fieldkitCustomer: {
+          select: { status: true, archivedAt: true },
+        },
+      },
+    });
+
+    if (!customerUser?.fieldkitCustomerId || !customerUser.fieldkitCustomer) {
+      throw new ShelfError({
+        cause: null,
+        title: "Customer account not linked",
+        message:
+          "Your account is not linked to a customer record. Please contact Fieldkit support.",
+        additionalData: { userId, organizationId },
+        label: "Permission",
+        status: 403,
+        shouldBeCaptured: true,
+      });
+    }
+
+    if (customerUser.fieldkitCustomer.status === "ARCHIVED") {
+      throw new ShelfError({
+        cause: null,
+        title: "Customer account archived",
+        message:
+          "This customer account has been archived. Please contact Fieldkit support if you believe this is in error.",
+        additionalData: {
+          userId,
+          organizationId,
+          fieldkitCustomerId: customerUser.fieldkitCustomerId,
+        },
+        label: "Permission",
+        status: 403,
+        shouldBeCaptured: false,
+      });
+    }
+
+    fieldkitCustomerId = customerUser.fieldkitCustomerId;
+    customerContactPermission = customerUser.customerContactPermission;
+    customerStatus = customerUser.fieldkitCustomer.status;
+  }
+
   /**
    * This checks the organization settings permissions overrides for BASE and SELF_SERVICE roles
-   * If the user is in a BASE or SELF_SERVICE role, we check if they can see all bookings
+   * If the user is in a BASE or SELF_SERVICE role, we check if they can see all bookings.
+   *
+   * CUSTOMER role is *never* allowed to see all bookings — they are hard-scoped
+   * to their own creator/custodian bookings via `buildCustomerBookingScope`.
+   * We short-circuit here so the `!isSelfServiceOrBase` branch (which would
+   * otherwise return true for CUSTOMER) cannot leak data.
    */
-  const canSeeAllBookings =
-    // Admin/Owner always can see all
-    !isSelfServiceOrBase ||
-    // SELF_SERVICE can see all if org setting allows
-    (role === OrganizationRoles.SELF_SERVICE &&
-      currentOrganization.selfServiceCanSeeBookings) ||
-    // BASE can see all if org setting allows
-    (role === OrganizationRoles.BASE &&
-      currentOrganization.baseUserCanSeeBookings);
+  const canSeeAllBookings = isCustomer
+    ? false
+    : // Admin/Owner always can see all
+      !isSelfServiceOrBase ||
+      // SELF_SERVICE can see all if org setting allows
+      (role === OrganizationRoles.SELF_SERVICE &&
+        currentOrganization.selfServiceCanSeeBookings) ||
+      // BASE can see all if org setting allows
+      (role === OrganizationRoles.BASE &&
+        currentOrganization.baseUserCanSeeBookings);
 
-  // Determine if user can see all custody information
-  const canSeeAllCustody =
-    // Admin/Owner always can see all
-    !isSelfServiceOrBase ||
-    // SELF_SERVICE can see all if org setting allows
-    (role === OrganizationRoles.SELF_SERVICE &&
-      currentOrganization.selfServiceCanSeeCustody) ||
-    // BASE can see all if org setting allows
-    (role === OrganizationRoles.BASE &&
-      currentOrganization.baseUserCanSeeCustody);
+  // Determine if user can see all custody information.
+  // Same hard rule for CUSTOMER as canSeeAllBookings above.
+  const canSeeAllCustody = isCustomer
+    ? false
+    : // Admin/Owner always can see all
+      !isSelfServiceOrBase ||
+      // SELF_SERVICE can see all if org setting allows
+      (role === OrganizationRoles.SELF_SERVICE &&
+        currentOrganization.selfServiceCanSeeCustody) ||
+      // BASE can see all if org setting allows
+      (role === OrganizationRoles.BASE &&
+        currentOrganization.baseUserCanSeeCustody);
 
   // Determine if user can use barcodes based on organization settings
   const canUseBarcodes = currentOrganization.barcodesEnabled ?? false;
@@ -125,6 +202,10 @@ export async function requirePermission({
     currentOrganization,
     role,
     isSelfServiceOrBase,
+    isCustomer,
+    fieldkitCustomerId,
+    customerContactPermission,
+    customerStatus,
     userOrganizations,
     canSeeAllBookings,
     canSeeAllCustody,
@@ -132,6 +213,14 @@ export async function requirePermission({
     canUseAudits,
   };
 }
+
+/**
+ * Shape of the object returned by {@link requirePermission}.
+ *
+ * Exported as a type alias so helpers in `~/utils/permissions/*` can accept
+ * a strongly-typed permission context without re-listing the fields.
+ */
+export type PermissionContext = Awaited<ReturnType<typeof requirePermission>>;
 
 /** Gets the role needed for SSO login from the groupID returned by the SSO claims */
 export function getRoleFromGroupId(

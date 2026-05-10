@@ -7,6 +7,8 @@ export enum QueueNames {
   auditQueue = "audit-queue",
   assetsQueue = "assets-queue",
   addonTrialQueue = "addon-trial-queue",
+  // Fieldkit Carbon ERP sync (customer + contact upserts, reconciliation cron).
+  carbonSyncQueue = "carbon-sync-queue",
 }
 
 let pgBossInstance!: PgBoss;

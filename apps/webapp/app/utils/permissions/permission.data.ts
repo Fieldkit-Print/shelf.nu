@@ -47,6 +47,11 @@ export enum PermissionEntity {
   userData = "user-data", // This is for the user to load their own data.
   update = "update",
   commandPaletteSearch = "command-palette-search",
+  /**
+   * Fieldkit-only: admin surface for customer master data + per-contact
+   * granular permission editing. Read/update gated to ADMIN/OWNER.
+   */
+  customer = "customer",
 }
 
 //this will come from DB eventually
@@ -100,6 +105,7 @@ export const Role2PermissionMap: {
     ],
     [PermissionEntity.update]: [PermissionAction.read],
     [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
+    [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.SELF_SERVICE]: {
     [PermissionEntity.asset]: [PermissionAction.read, PermissionAction.custody],
@@ -153,6 +159,7 @@ export const Role2PermissionMap: {
     ],
     [PermissionEntity.update]: [PermissionAction.read],
     [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
+    [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.ADMIN]: {
     [PermissionEntity.asset]: [
@@ -292,6 +299,69 @@ export const Role2PermissionMap: {
     ],
     [PermissionEntity.update]: [PermissionAction.read],
     [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
+    [PermissionEntity.customer]: [
+      PermissionAction.read,
+      PermissionAction.update,
+    ],
+  },
+  /**
+   * CUSTOMER role: external customer contact synced from Carbon ERP.
+   *
+   * Scoping note: this map only governs *what entity actions are allowed*.
+   * The hard isolation of "this customer can only see their own assets" is
+   * enforced separately in `requirePermission()` by injecting a mandatory
+   * `customerId` filter into Asset / Booking queries via the helpers in
+   * `~/utils/permissions/customer-scope.server.ts`.
+   *
+   * Granular per-contact toggles (canRequestShipment, canRentInventory, etc.)
+   * stored on `CustomerContactPermission` further restrict the create/update
+   * actions allowed below at the route layer.
+   */
+  [OrganizationRoles.CUSTOMER]: {
+    [PermissionEntity.asset]: [PermissionAction.read],
+    [PermissionEntity.assetIndexSettings]: [PermissionAction.read],
+    [PermissionEntity.booking]: [
+      PermissionAction.create, // Gated further by canRequestShipment / canRentInventory
+      PermissionAction.read,
+      PermissionAction.update,
+      PermissionAction.delete, // Own draft bookings only.
+      PermissionAction.cancel,
+      PermissionAction.manageAssets,
+      PermissionAction.manageKits,
+    ],
+    [PermissionEntity.bookingNote]: [
+      PermissionAction.read,
+      PermissionAction.create,
+    ],
+    [PermissionEntity.auditNote]: [],
+    [PermissionEntity.audit]: [],
+    [PermissionEntity.qr]: [PermissionAction.read],
+    [PermissionEntity.category]: [],
+    [PermissionEntity.customField]: [],
+    [PermissionEntity.location]: [],
+    [PermissionEntity.locationNote]: [],
+    [PermissionEntity.tag]: [],
+    [PermissionEntity.teamMember]: [],
+    [PermissionEntity.teamMemberProfile]: [],
+    [PermissionEntity.workspace]: [],
+    [PermissionEntity.dashboard]: [],
+    [PermissionEntity.generalSettings]: [],
+    [PermissionEntity.workingHours]: [PermissionAction.read],
+    [PermissionEntity.subscription]: [],
+    [PermissionEntity.kit]: [PermissionAction.read],
+    [PermissionEntity.note]: [],
+    [PermissionEntity.scan]: [],
+    [PermissionEntity.custody]: [],
+    [PermissionEntity.assetReminders]: [],
+    [PermissionEntity.teamMemberNote]: [],
+    [PermissionEntity.emailSettings]: [],
+    [PermissionEntity.userData]: [
+      PermissionAction.read,
+      PermissionAction.update,
+    ],
+    [PermissionEntity.update]: [PermissionAction.read],
+    [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
+    [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.OWNER]: {
     [PermissionEntity.asset]: [
@@ -433,5 +503,9 @@ export const Role2PermissionMap: {
     ],
     [PermissionEntity.update]: [PermissionAction.read],
     [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
+    [PermissionEntity.customer]: [
+      PermissionAction.read,
+      PermissionAction.update,
+    ],
   },
 };

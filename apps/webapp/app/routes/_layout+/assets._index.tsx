@@ -46,6 +46,7 @@ import { checkExhaustiveSwitch } from "~/utils/check-exhaustive-switch";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
 import { ShelfError, makeShelfError } from "~/utils/error";
 import { payload, error, parseData } from "~/utils/http.server";
+import { buildCustomerAssetScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -65,16 +66,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
   const { userId } = authSession;
   try {
     /** Validate permissions and fetch user */
-    const [
-      {
-        organizationId,
-        organizations,
-        currentOrganization,
-        role,
-        canUseBarcodes,
-      },
-      user,
-    ] = await Promise.all([
+    const [perm, user] = await Promise.all([
       requirePermission({
         userId,
         request,
@@ -102,6 +94,14 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
         }),
     ]);
 
+    const {
+      organizationId,
+      organizations,
+      currentOrganization,
+      role,
+      canUseBarcodes,
+    } = perm;
+
     const settings = await getAssetIndexSettings({
       userId,
       organizationId,
@@ -110,8 +110,11 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
     });
     const mode = settings.mode;
 
-    /** For base and self service users, we dont allow to view the advanced index */
-    if (mode === "ADVANCED" && ["BASE", "SELF_SERVICE"].includes(role)) {
+    /** For base, self-service, and customer users, we dont allow advanced index */
+    if (
+      mode === "ADVANCED" &&
+      ["BASE", "SELF_SERVICE", "CUSTOMER"].includes(role)
+    ) {
       await changeMode({
         userId,
         organizationId,
@@ -128,6 +131,9 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       });
     }
 
+    // Fieldkit multi-tenancy scope. Empty for staff users.
+    const customerScope = buildCustomerAssetScope(perm);
+
     return mode === "SIMPLE"
       ? await simpleModeLoader({
           request,
@@ -138,6 +144,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
           currentOrganization,
           user,
           settings,
+          customerScope,
         })
       : await advancedModeLoader({
           request,
@@ -148,6 +155,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
           currentOrganization,
           user,
           settings,
+          customerScope,
         });
   } catch (cause) {
     const reason = makeShelfError(cause, { userId });
