@@ -11,6 +11,7 @@ import { registerEmailWorkers } from "./emails/email.worker.server";
 import { registerAddonTrialWorkers } from "./modules/addon-trial/worker.server";
 import { regierAssetWorkers } from "./modules/asset-reminder/worker.server";
 import { registerAuditWorkers } from "./modules/audit/worker.server";
+import { registerBillingWorker } from "./modules/billing/queue.server";
 import { registerBookingWorkers } from "./modules/booking/worker.server";
 import { registerCarbonSyncWorker } from "./modules/carbon-sync/queue.server";
 import { ShelfError } from "./utils/error";
@@ -88,6 +89,17 @@ schedulerService
               cause,
               message:
                 "Something went wrong while registering Carbon sync worker.",
+              label: "Carbon Sync",
+            })
+          );
+        }),
+      registerBillingWorker()
+        .then(() => console.log("Billing worker registered"))
+        .catch((cause) => {
+          Logger.error(
+            new ShelfError({
+              cause,
+              message: "Something went wrong while registering billing worker.",
               label: "Carbon Sync",
             })
           );

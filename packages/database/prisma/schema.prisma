@@ -283,6 +283,8 @@ model Asset {
   reminders    AssetReminder[]
   auditEntries AuditAsset[]
   auditScans   AuditScan[]
+  /// Billing-event ledger entries for this asset. See {@link BillableEvent}.
+  billableEvents BillableEvent[]
 
   // Unique constraint for organization-scoped sequential IDs
   @@unique([organizationId, sequentialId], name: "asset_org_sequential_unique")
@@ -841,6 +843,9 @@ model Organization {
   roleChangeLogs      RoleChangeLog[]
   teamMemberNotes     TeamMemberNote[]
   activityEvents      ActivityEvent[]
+
+  /// Fieldkit billing-event ledger. See {@link BillableEvent}.
+  billableEvents BillableEvent[]
 
   // Migration flag to track if sequential IDs have been generated for this organization's existing assets
   hasSequentialIdsMigrated Boolean @default(false)
@@ -2035,4 +2040,109 @@ model BookingAssetMeta {
 
   @@unique([bookingId, assetId])
   @@index([assetId])
+}
+
+// =============================================================================
+// Billing event ledger
+// =============================================================================
+//
+// Shelf emits a `BillableEvent` row each time something happens physically
+// that should produce a Carbon invoice line item — daily storage, picks,
+// returns, rental usage, rental loss, consumable consumption.
+//
+// Carbon owns invoicing. Shelf is the source of "what happened"; a worker
+// drains pending events and posts them to Carbon's billing API. Push
+// failures keep the event in PENDING / FAILED state so retries don't
+// double-bill.
+//
+// Pricing config lives in Carbon and is read via the FDW view
+// `carbon_remote.v1_warehouse_pricing` (currently a placeholder until
+// Carbon adds the warehousePrice table).
+// =============================================================================
+
+/// Lifecycle for a billable event. PENDING → PUSHED on success;
+/// PUSHED → IGNORED if billing is later waived; FAILED rows are
+/// retryable. Idempotency on `idempotencyKey` makes retries safe.
+enum BillableEventStatus {
+  PENDING
+  PUSHED
+  FAILED
+  IGNORED
+}
+
+/// Kind discriminator. Carbon's billing API maps each kind to a price
+/// book entry (rate × quantity × period).
+enum BillableEventKind {
+  /// One day of storage for a single customer-owned asset.
+  STORAGE
+  /// Customer requested a pick (asset checked out of storage).
+  PICK
+  /// Customer-owned asset returned to storage.
+  RETURN
+  /// One day of rental usage on a Fieldkit-owned rentable asset.
+  RENTAL_USE
+  /// Rental was not returned by the deadline. Replacement-cost charge.
+  RENTAL_LOSS
+  /// Consumable consumed (quantityOut − quantityReturned on a booking).
+  CONSUMABLE_USE
+}
+
+model BillableEvent {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organizationId String
+
+  kind   BillableEventKind
+  status BillableEventStatus @default(PENDING)
+
+  /// Carbon customer this charge is billed against (text reference).
+  carbonCustomerId String
+
+  /// Asset the event relates to. Null for org-level events (rare today).
+  asset   Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  assetId String?
+
+  /// Carbon item id (denormalized from Asset for grouping/reporting
+  /// without a JOIN). Populated at event-emit time.
+  carbonPartId String?
+
+  /// Location at event time (for storage events; absent for others).
+  locationId String?
+
+  /// Quantity. 1 for INSTANCE events; >1 for CONSUMABLE_USE.
+  quantity Float @default(1)
+
+  /// Amount in minor units (cents) computed at event emit. Null when
+  /// pricing is "look up at invoice generation." Carbon owns final pricing;
+  /// this is Shelf's snapshot for auditability.
+  amountCents  Int?
+  currencyCode String?
+
+  /// Window the event covers. For one-time events `occurredAt` is the
+  /// instant; `periodStart`/`periodEnd` describe billing periods.
+  occurredAt  DateTime @default(now()) @db.Timestamptz(3)
+  periodStart DateTime? @db.Timestamptz(3)
+  periodEnd   DateTime? @db.Timestamptz(3)
+
+  /// Reference to the Carbon invoice/sales-order line populated when the
+  /// push succeeds. Text — no FK across systems.
+  carbonInvoiceLineId String?
+
+  /// Deterministic key for safe retries. Computed as a hash of
+  /// (kind, assetId, periodStart) so re-running storage cron over the
+  /// same day is a no-op.
+  idempotencyKey String @unique
+
+  lastPushAttemptedAt DateTime? @db.Timestamptz(3)
+  lastPushError       String?
+
+  notes String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([organizationId, status])
+  @@index([carbonCustomerId, occurredAt])
+  @@index([assetId])
+  @@index([kind, status, occurredAt])
 }

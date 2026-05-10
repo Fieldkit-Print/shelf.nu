@@ -9,6 +9,9 @@ export enum QueueNames {
   addonTrialQueue = "addon-trial-queue",
   // Fieldkit Carbon ERP sync (customer + contact upserts, reconciliation cron).
   carbonSyncQueue = "carbon-sync-queue",
+  // Fieldkit billing event push to Carbon (drains pending BillableEvent rows
+  // and posts each to Carbon's billing API). See ~/modules/billing.
+  billingPushQueue = "billing-push-queue",
 }
 
 let pgBossInstance!: PgBoss;

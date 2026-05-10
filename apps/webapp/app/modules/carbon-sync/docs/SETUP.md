@@ -1,32 +1,61 @@
-# Carbon ↔ shelf.nu deployment guide
+# Carbon ↔ shelf.nu deployment guide (FDW edition)
 
-End-to-end checklist for getting the Fieldkit customer-tenancy integration
-running in production.
+End-to-end checklist for the FDW architecture. SQL artifacts in this
+folder; apply each manually in the relevant Supabase Studio SQL Editor.
 
-## 1. Apply the Carbon migration
+## What's in this folder
 
-Run [`CARBON_MIGRATION.sql`](./CARBON_MIGRATION.sql) against your **Carbon**
-Supabase project (Supabase Studio → SQL Editor → New query → paste → Run).
+| File                        | Where to run    | What it does                                                                                                                        |
+| --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `CARBON_MIGRATION.sql`      | Carbon Supabase | webhook subscriptions for customerContact + contact, adds `item.visibleInShelf`, drops the early `customer-asset-storage` machinery |
+| `CONTRACT_VIEWS_CARBON.sql` | Carbon Supabase | creates `public_api.v1_*` views Shelf reads via FDW                                                                                 |
+| `CONTRACT_VIEWS_SHELF.sql`  | Shelf Supabase  | creates `public_api.v1_*` views Carbon reads via FDW                                                                                |
+| `FDW_SETUP_CARBON.sql`      | Carbon Supabase | wires Carbon to read Shelf via `shelf_remote` foreign tables                                                                        |
+| `FDW_SETUP_SHELF.sql`       | Shelf Supabase  | wires Shelf to read Carbon via `carbon_remote` foreign tables                                                                       |
 
-Verify with:
+## Order of operations
 
-```sql
-SELECT name, "table" FROM "webhookTable" ORDER BY name;
-```
+The Carbon side has to ship first, since Shelf imports Carbon's contract
+views via FDW. Sequence:
 
-You should see `Customer`, `Customer Contact`, and `Contact` in the list
-(plus the others Carbon ships with).
+1. **Carbon Supabase** — run `CARBON_MIGRATION.sql`. Verify with:
+   ```sql
+   SELECT name, "table" FROM "webhookTable" ORDER BY name;
+   --   includes Customer, Customer Contact, Contact
+   SELECT column_name FROM information_schema.columns
+     WHERE table_name = 'item' AND column_name = 'visibleInShelf';
+   --   one row
+   SELECT count(*) FROM information_schema.tables
+     WHERE table_name = 'customerAssetEvent';
+   --   zero rows
+   ```
+2. **Carbon Supabase** — run `CONTRACT_VIEWS_CARBON.sql`. Replace
+   `REPLACE_ME_AT_DEPLOY` in the `CREATE ROLE shelf_fdw_reader` line
+   with a strong password; stash it in Carbon's Supabase Vault.
+3. **Shelf Supabase** — run your Prisma migrations
+   (`pnpm db:deploy-migration` against the Shelf DB) so the
+   `BookingAssetMeta`, `Asset.kind`, etc. exist.
+4. **Shelf Supabase** — run `CONTRACT_VIEWS_SHELF.sql`. Replace
+   `REPLACE_ME_AT_DEPLOY` in `CREATE ROLE carbon_fdw_reader` with a
+   strong password; stash in Shelf's Supabase Vault.
+5. **Carbon Supabase** — run `FDW_SETUP_CARBON.sql`. Edit the file
+   beforehand to substitute the Shelf project ref and the
+   `carbon_fdw_reader` password from step 4.
+6. **Shelf Supabase** — run `FDW_SETUP_SHELF.sql`. Substitute the Carbon
+   project ref and the `shelf_fdw_reader` password from step 2.
+7. **Sanity check** — run the queries at the bottom of each FDW file.
 
-## 2. Configure Carbon webhooks (Carbon UI → Settings → Webhooks)
+## Configure Carbon webhooks (Carbon UI → Settings → Webhooks)
 
-Create three webhook subscriptions, all pointing to the same URL with
-the same `?token=` value (the value of `CARBON_WEBHOOK_SECRET` on shelf):
+Four subscriptions, all pointing at the same URL with the same `?token=`
+value (matches `CARBON_WEBHOOK_SECRET` on Shelf):
 
 | Name                      | Table            | Events                 |
 | ------------------------- | ---------------- | ---------------------- |
 | `shelf customer sync`     | Customer         | Insert, Update, Delete |
 | `shelf contact-link sync` | Customer Contact | Insert, Update, Delete |
 | `shelf contact sync`      | Contact          | Update                 |
+| `shelf item sync`         | Item             | Insert, Update, Delete |
 
 URL for each:
 
@@ -34,72 +63,69 @@ URL for each:
 https://<your-shelf-render-url>/api/webhooks/carbon?token=<CARBON_WEBHOOK_SECRET>
 ```
 
-## 3. Issue a Carbon API key
+## Issue a Carbon API key
 
-In Carbon → Settings → API Keys:
+Settings → API Keys → New:
 
 - Permission scope: `view: sales` (scoped to the Fieldkit company)
 - Name: e.g. `shelf customer sync`
 - Save and copy the key — you'll only see it once.
 
-## 4. Set shelf env vars on Render
+## Shelf env vars on Render
 
-| Var                                | What                                                                    |
-| ---------------------------------- | ----------------------------------------------------------------------- |
-| `CARBON_API_BASE_URL`              | Carbon ERP app URL, no trailing slash (e.g. `https://erp.fieldkit.cc`)  |
-| `CARBON_API_KEY`                   | The `carbon-key` value from step 3                                      |
-| `CARBON_WEBHOOK_SECRET`            | Random hex (`openssl rand -hex 32`); must match the `?token=` in step 2 |
-| `FIELDKIT_CARBON_COMPANY_ID`       | Your Fieldkit company id in Carbon (e.g. `d742au0gqeb4g2dcj3rg`)        |
-| `FIELDKIT_PRIMARY_ORGANIZATION_ID` | Your shelf `Organization.id` that hosts customer tenancy                |
+| Var                                | What                                                              |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `CARBON_API_BASE_URL`              | Carbon ERP app URL, no trailing slash (`https://erp.fieldkit.cc`) |
+| `CARBON_API_KEY`                   | The `carbon-key` value from the API key step                      |
+| `CARBON_WEBHOOK_SECRET`            | Random hex (`openssl rand -hex 32`); matches the `?token=`        |
+| `FIELDKIT_CARBON_COMPANY_ID`       | Fieldkit's Carbon company id (e.g. `d742au0gqeb4g2dcj3rg`)        |
+| `FIELDKIT_PRIMARY_ORGANIZATION_ID` | Shelf `Organization.id` that hosts customer tenancy               |
 
 The carbon-sync worker auto-registers at boot
-(`apps/webapp/app/entry.server.tsx`); no extra wiring needed.
+(`apps/webapp/app/entry.server.tsx`).
 
-## 5. Verify
+## Verify
 
-- Create a new test customer in Carbon → check shelf's `/customers` page
-  appears within seconds.
-- Add a contact to that customer in Carbon → check the contact appears in
-  the shelf customer detail page, and the new User row is created.
-- Update the contact's email in Carbon → check the User's email refreshes
-  in shelf.
-- Delete the customerContact link in Carbon → check the User's
-  `fieldkitCustomerId` clears in shelf (run a query against `User` table).
+- Create a test customer in Carbon → check `/customers` in Shelf appears.
+- Add a contact in Carbon → confirm new User row + magic-link email.
+- Toggle a Consumable item's `visibleInShelf` to true → confirm a
+  CONSUMABLE Asset appears in Shelf.
+- Create a serial item and add a serialNumber in Carbon → (after the
+  intake-flow lands) an INSTANCE Asset should appear in Shelf.
+- Update a contact's email in Carbon → User email refreshes in Shelf.
+- Delete a customerContact link in Carbon → User's `carbonCustomerId`
+  clears in Shelf (query `User` table).
 
-## 6. Initial backfill (one-time)
+## Initial backfill (one-time)
 
-After webhooks have been live for a few minutes, kick a one-time
-reconcile pass to pull anything that pre-dated the webhook subscription.
-You can do this from a Render shell or the Supabase SQL editor against
-shelf's database:
+After webhooks have been live a few minutes, kick a one-time reconcile
+pass to pull anything that pre-dated the webhook subscription:
 
 ```sql
--- Enqueue a reconcile job for the carbon-sync worker
+-- Against shelf's database
 INSERT INTO pgboss.job (name, data)
 VALUES ('carbon-sync-queue', '{"kind": "reconcile-all"}'::jsonb);
 ```
 
 The worker picks this up within ~5 minutes (pg-boss polling interval)
-and pages through all customers + contacts in the Fieldkit company.
-
-## 7. Recurring reconciliation (optional but recommended)
-
-Configure Render Cron to enqueue a `reconcile-all` job nightly. Use the
-same SQL above; schedule it for ~3am local time. This catches any
-webhooks missed during deploy windows or transient errors.
+and pages all customerContact links in the Fieldkit company.
 
 ## Troubleshooting
 
-- **401 on Carbon webhook deliveries**: token mismatch. Double-check the
-  `?token=` value in the Carbon webhook URL matches `CARBON_WEBHOOK_SECRET`
-  on Render exactly.
-- **200 but nothing happens**: probably a `companyId` mismatch. Check
-  shelf logs for `[Carbon Sync] Ignoring webhook for non-Fieldkit company`.
-  Re-check `FIELDKIT_CARBON_COMPANY_ID`.
-- **`Carbon customer X not found`**: Carbon's webhook fired before the
-  Supabase service-role lookup could resolve the row. Usually a one-off;
-  the next reconcile pass will heal.
-- **No new User created on contact link**: check shelf logs for SMTP
-  errors (`Failed to send customer contact invite`) — the User is still
-  created even on email failure, but you'll see the warning. Verify
-  `SMTP_*` env vars.
+- **401 on Carbon webhook deliveries** — token mismatch. Re-check
+  `CARBON_WEBHOOK_SECRET` vs the `?token=` query param.
+- **200 but nothing happens** — `companyId` mismatch. Shelf logs
+  `[Carbon Sync] Ignoring webhook for non-Fieldkit company`. Re-check
+  `FIELDKIT_CARBON_COMPANY_ID`.
+- **`Carbon customer X not found`** — webhook arrived before the customer
+  finished propagating in Carbon, or REST cache lag. Usually recovers on
+  the next reconcile pass.
+- **FDW query hangs or errors** — Carbon Supabase down, wrong port (must
+  be 5432 / direct, not 6543 / pgbouncer), or stale password. Re-import
+  the foreign schema after rotating: drop+create `carbon_remote` schema.
+- **`schema "shelf_remote" already exists`** — re-running setup; the
+  `DROP SCHEMA ... CASCADE` line handles that. If you see it during a
+  fresh run, drop manually and re-import.
+- **No CONSUMABLE Asset appears after toggling visibleInShelf** — the
+  Carbon webhook payload must include `visibleInShelf: true` in `record`.
+  Confirm the column exists (verification SQL in CARBON_MIGRATION.sql).
