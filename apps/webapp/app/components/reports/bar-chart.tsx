@@ -29,8 +29,8 @@ import type { ChartSeries } from "~/modules/reports/types";
 
 /** Color palette for multi-series charts */
 const SERIES_COLORS = [
-  "#EF6820", // primary-500 (Shelf orange)
-  "#22c55e", // green-500
+  "#00AC4E", // primary-500 (Fieldkit green)
+  "#EF6820", // orange-500 (accent)
   "#3b82f6", // blue-500
   "#a855f7", // purple-500
   "#f59e0b", // amber-500

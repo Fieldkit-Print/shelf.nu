@@ -29,10 +29,10 @@ import type {
 } from "~/modules/reports/types";
 import { tw } from "~/utils/tw";
 
-/** CSS custom properties to theme react-day-picker with Shelf's primary color and compact sizing */
+/** CSS custom properties to theme react-day-picker with Fieldkit's primary color and compact sizing */
 const dayPickerStyles = {
-  "--rdp-accent-color": "#F97316",
-  "--rdp-accent-background-color": "#FFF7ED",
+  "--rdp-accent-color": "#00AC4E",
+  "--rdp-accent-background-color": "#F0FDF4",
   "--rdp-day-width": "32px",
   "--rdp-day-height": "32px",
   "--rdp-day_button-width": "32px",

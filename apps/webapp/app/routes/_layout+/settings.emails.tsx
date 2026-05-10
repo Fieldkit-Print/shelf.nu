@@ -287,7 +287,7 @@ export default function EmailSettingsPage() {
  */
 const EMAIL_PREVIEW_VIEW_BUTTON_STYLE = {
   display: "inline-block",
-  backgroundColor: "#EF6820",
+  backgroundColor: "#00AC4E",
   color: "white",
   fontSize: "14px",
   fontWeight: "700",

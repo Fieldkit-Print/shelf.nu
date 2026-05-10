@@ -38,7 +38,7 @@ const FakeCheckbox = ({ checked }: { checked: boolean }) =>
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <rect x="0.5" y="0.5" width="19" height="19" rx="5.5" fill="#FEF6EE" />
+      <rect x="0.5" y="0.5" width="19" height="19" rx="5.5" fill="#F0FDF4" />
       <path
         d="M14.6668 6.5L8.25016 12.9167L5.3335 10"
         stroke="currentColor"
