@@ -34,20 +34,28 @@ URL for each:
 https://<your-shelf-render-url>/api/webhooks/carbon?token=<CARBON_WEBHOOK_SECRET>
 ```
 
-## 3. Set shelf env vars on Render
+## 3. Issue a Carbon API key
 
-| Var                                | What                                                                     |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `CARBON_SUPABASE_URL`              | Your Carbon Supabase project URL (e.g. `https://abc.supabase.co`)        |
-| `CARBON_SUPABASE_SERVICE_ROLE_KEY` | The Carbon project's `service_role` key (from Supabase → Settings → API) |
-| `CARBON_WEBHOOK_SECRET`            | Random hex (`openssl rand -hex 32`); must match the `?token=` in step 2  |
-| `FIELDKIT_CARBON_COMPANY_ID`       | Your Fieldkit company id in Carbon (e.g. `d742au0gqeb4g2dcj3rg`)         |
-| `FIELDKIT_PRIMARY_ORGANIZATION_ID` | Your shelf `Organization.id` that hosts customer tenancy                 |
+In Carbon → Settings → API Keys:
+
+- Permission scope: `view: sales` (scoped to the Fieldkit company)
+- Name: e.g. `shelf customer sync`
+- Save and copy the key — you'll only see it once.
+
+## 4. Set shelf env vars on Render
+
+| Var                                | What                                                                    |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `CARBON_API_BASE_URL`              | Carbon ERP app URL, no trailing slash (e.g. `https://erp.fieldkit.cc`)  |
+| `CARBON_API_KEY`                   | The `carbon-key` value from step 3                                      |
+| `CARBON_WEBHOOK_SECRET`            | Random hex (`openssl rand -hex 32`); must match the `?token=` in step 2 |
+| `FIELDKIT_CARBON_COMPANY_ID`       | Your Fieldkit company id in Carbon (e.g. `d742au0gqeb4g2dcj3rg`)        |
+| `FIELDKIT_PRIMARY_ORGANIZATION_ID` | Your shelf `Organization.id` that hosts customer tenancy                |
 
 The carbon-sync worker auto-registers at boot
 (`apps/webapp/app/entry.server.tsx`); no extra wiring needed.
 
-## 4. Verify
+## 5. Verify
 
 - Create a new test customer in Carbon → check shelf's `/customers` page
   appears within seconds.
@@ -58,7 +66,7 @@ The carbon-sync worker auto-registers at boot
 - Delete the customerContact link in Carbon → check the User's
   `fieldkitCustomerId` clears in shelf (run a query against `User` table).
 
-## 5. Initial backfill (one-time)
+## 6. Initial backfill (one-time)
 
 After webhooks have been live for a few minutes, kick a one-time
 reconcile pass to pull anything that pre-dated the webhook subscription.
@@ -74,7 +82,7 @@ VALUES ('carbon-sync-queue', '{"kind": "reconcile-all"}'::jsonb);
 The worker picks this up within ~5 minutes (pg-boss polling interval)
 and pages through all customers + contacts in the Fieldkit company.
 
-## 6. Recurring reconciliation (optional but recommended)
+## 7. Recurring reconciliation (optional but recommended)
 
 Configure Render Cron to enqueue a `reconcile-all` job nightly. Use the
 same SQL above; schedule it for ~3am local time. This catches any

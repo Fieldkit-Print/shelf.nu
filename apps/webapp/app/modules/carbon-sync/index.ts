@@ -33,6 +33,7 @@ export {
   updateUserFromContact,
   upsertContactLink,
   upsertCustomerFromCarbon,
+  upsertCustomerFromCarbonLite,
   upsertUserFromContact,
 } from "./service.server";
 

@@ -32,7 +32,7 @@ import { db } from "~/database/db.server";
 import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 
-import { fetchContactById, fetchCustomerById } from "./client.server";
+import { fetchContactInCustomer, fetchCustomerById } from "./client.server";
 import { sendCustomerContactInvite } from "./invite.server";
 import type {
   CarbonContact,
@@ -111,6 +111,42 @@ export async function upsertCustomerFromCarbon(carbon: CarbonCustomer) {
 }
 
 /**
+ * Upsert variant for the REST backfill path, where Carbon's list endpoint
+ * only returns `{ id, name }` (no merge state). Used by reconciliation and
+ * by the contact-link race-condition recovery in {@link upsertContactLink}.
+ *
+ * Status defaults to ACTIVE. If the customer is actually archived/merged in
+ * Carbon, the next webhook UPDATE event will set the correct status.
+ */
+export async function upsertCustomerFromCarbonLite(args: {
+  carbonCustomerId: string;
+  displayName: string;
+}) {
+  const organizationId = getPrimaryOrganizationId();
+  const customer = await db.customer.upsert({
+    where: {
+      organizationId_carbonCustomerId: {
+        organizationId,
+        carbonCustomerId: args.carbonCustomerId,
+      },
+    },
+    create: {
+      organizationId,
+      carbonCustomerId: args.carbonCustomerId,
+      displayName: args.displayName,
+      status: "ACTIVE",
+      syncedAt: new Date(),
+    },
+    update: {
+      displayName: args.displayName,
+      syncedAt: new Date(),
+    },
+    select: { id: true },
+  });
+  return customer.id;
+}
+
+/**
  * Marks a customer as archived in shelf. Used for Carbon `customer` DELETE
  * events. Hard-delete is intentionally avoided — historical billing data
  * must remain resolvable.
@@ -162,6 +198,9 @@ export async function upsertContactLink(payload: CarbonCustomerContact) {
   });
 
   if (!customer) {
+    // Race: junction event arrived before its parent customer event.
+    // Fetch the customer (lite) over REST and upsert a stub; a subsequent
+    // customer webhook will fill in any extra fields.
     const carbonCustomer = await fetchCustomerById(payload.customerId);
     if (!carbonCustomer) {
       throw new ShelfError({
@@ -171,17 +210,27 @@ export async function upsertContactLink(payload: CarbonCustomerContact) {
         label: "Carbon Sync",
       });
     }
-    const upsertedId = await upsertCustomerFromCarbon(carbonCustomer);
+    const upsertedId = await upsertCustomerFromCarbonLite({
+      carbonCustomerId: carbonCustomer.id,
+      displayName: carbonCustomer.name,
+    });
     customer = { id: upsertedId, status: "ACTIVE" };
   }
 
-  // Step 2: fetch contact details (the junction row only has the id).
-  const carbonContact = await fetchContactById(payload.contactId);
+  // Step 2: fetch contact details. The junction row only has ids, so we
+  // hit Carbon's REST endpoint scoped to the parent customer.
+  const carbonContact = await fetchContactInCustomer({
+    carbonCustomerId: payload.customerId,
+    carbonContactId: payload.contactId,
+  });
   if (!carbonContact) {
     throw new ShelfError({
       cause: null,
-      message: `Carbon contact ${payload.contactId} not found while syncing link.`,
-      additionalData: { carbonContactId: payload.contactId },
+      message: `Carbon contact ${payload.contactId} not found in customer ${payload.customerId}.`,
+      additionalData: {
+        carbonContactId: payload.contactId,
+        carbonCustomerId: payload.customerId,
+      },
       label: "Carbon Sync",
     });
   }

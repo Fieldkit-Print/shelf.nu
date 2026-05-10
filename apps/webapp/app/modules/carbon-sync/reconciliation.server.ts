@@ -22,11 +22,11 @@ import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 import {
-  iterateCustomers,
   iterateCustomerContactsWithContact,
+  iterateCustomers,
 } from "./client.server";
 import {
-  upsertCustomerFromCarbon,
+  upsertCustomerFromCarbonLite,
   upsertUserFromContact,
 } from "./service.server";
 import type { CarbonSyncJob } from "./types";
@@ -57,7 +57,10 @@ export async function reconcileAll(
 
   for await (const customer of iterateCustomers({ since })) {
     try {
-      await upsertCustomerFromCarbon(customer);
+      await upsertCustomerFromCarbonLite({
+        carbonCustomerId: customer.id,
+        displayName: customer.name,
+      });
       customers += 1;
     } catch (cause) {
       customerErrors += 1;

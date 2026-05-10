@@ -18,10 +18,11 @@ import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 import { QueueNames, scheduler } from "~/utils/scheduler.server";
-import { fetchContactById, fetchCustomerById } from "./client.server";
+
+import { fetchContactInCustomer, fetchCustomerById } from "./client.server";
 import { reconcileAll } from "./reconciliation.server";
 import {
-  upsertCustomerFromCarbon,
+  upsertCustomerFromCarbonLite,
   upsertUserFromContact,
 } from "./service.server";
 import type { CarbonSyncJob } from "./types";
@@ -57,7 +58,10 @@ async function runJob(job: CarbonSyncJob) {
           label: "Carbon Sync",
         });
       }
-      await upsertCustomerFromCarbon(carbon);
+      await upsertCustomerFromCarbonLite({
+        carbonCustomerId: carbon.id,
+        displayName: carbon.name,
+      });
       return;
     }
 
@@ -69,7 +73,28 @@ async function runJob(job: CarbonSyncJob) {
           label: "Carbon Sync",
         });
       }
-      const carbon = await fetchContactById(job.carbonContactId);
+      // We need the parent customer to call Carbon's contact endpoint. If a
+      // shelf User already exists with this carbonContactId we can recover
+      // the link; otherwise we have nothing to scope by and skip — webhook
+      // junction events are the canonical provisioning trigger.
+      const user = await db.user.findUnique({
+        where: { carbonContactId: job.carbonContactId },
+        select: {
+          fieldkitCustomerId: true,
+          fieldkitCustomer: { select: { carbonCustomerId: true } },
+        },
+      });
+      if (!user?.fieldkitCustomerId || !user.fieldkitCustomer) {
+        Logger.warn(
+          "[Carbon Sync] upsert-contact: no shelf user yet; skipping",
+          { carbonContactId: job.carbonContactId }
+        );
+        return;
+      }
+      const carbon = await fetchContactInCustomer({
+        carbonCustomerId: user.fieldkitCustomer.carbonCustomerId,
+        carbonContactId: job.carbonContactId,
+      });
       if (!carbon) {
         throw new ShelfError({
           cause: null,
@@ -77,20 +102,6 @@ async function runJob(job: CarbonSyncJob) {
           additionalData: { carbonContactId: job.carbonContactId },
           label: "Carbon Sync",
         });
-      }
-      // The job payload doesn't carry a customer id; resolve via existing
-      // shelf User if present. If we can't find the user yet, skip — the
-      // junction-event path is the canonical provisioning trigger.
-      const user = await db.user.findUnique({
-        where: { carbonContactId: carbon.id },
-        select: { fieldkitCustomerId: true },
-      });
-      if (!user?.fieldkitCustomerId) {
-        Logger.warn(
-          "[Carbon Sync] upsert-contact: no shelf user yet; skipping",
-          { carbonContactId: carbon.id }
-        );
-        return;
       }
       await upsertUserFromContact({
         organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,

@@ -1,73 +1,66 @@
 /**
- * Carbon Supabase Client
+ * Carbon REST API Client
  *
- * Carbon ERP doesn't expose a public REST/GraphQL API for external consumers
- * — its app is built on Remix loaders that authenticate via Supabase. So
- * shelf reads from Carbon's Postgres directly using the service-role key
- * (`CARBON_SUPABASE_SERVICE_ROLE_KEY`). This is a Fieldkit-internal trust
- * relationship: shelf and Carbon are both ours.
+ * Thin fetch wrapper around Carbon ERP's public REST API. Carbon authenticates
+ * via the `carbon-key` header (a scoped API key issued in
+ * Settings → API Keys with `view: sales` permission for Fieldkit's company).
  *
  * What this module is for:
  *
  * 1. **Webhook follow-ups** — when a `customerContact` INSERT event fires,
  *    the payload only carries the junction row (contactId + customerId).
- *    To mirror the contact to a shelf User we need its email/name from the
- *    `contact` table. {@link fetchContactById} does that lookup.
+ *    To mirror the contact to a shelf User we need its email/name, which
+ *    {@link fetchContactInCustomer} pulls via Carbon's customer-contacts
+ *    endpoint.
  * 2. **Reconciliation cron** — see {@link iterateCustomers} and
  *    {@link iterateCustomerContactsWithContact} which page through Carbon's
- *    customer + customerContact data filtered by Fieldkit's company id.
+ *    customer + customerContact data for Fieldkit's company.
  *
- * Concurrency: a single, lazily-created Supabase client is reused across
- * calls (cheap; @supabase/supabase-js handles its own connection pooling
- * via the underlying fetch).
+ * Notes on Carbon's REST surface:
+ *
+ *   - `GET /api/sales/customers` returns `{ data: [{ id, name }], count, error }`.
+ *     Just `id` + `name` — no `mergedIntoCustomerId`. Webhook UPDATE events
+ *     carry the full row, so backfill is best-effort for merge state.
+ *   - `GET /api/sales/customer-contacts/:customerId` returns
+ *     `{ data: [{ ..junction.., contact: { ..contact.. }, user: { id, active } }], count, error }`.
+ *   - There's no "get customer by id" or "get contact by id" endpoint —
+ *     we either filter the list or fetch by parent customer.
  *
  * @see {@link file://./types.ts}            Shapes
  * @see {@link file://./service.server.ts}   Upsert dispatch
  */
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-
 import {
-  CARBON_SUPABASE_SERVICE_ROLE_KEY,
-  CARBON_SUPABASE_URL,
+  CARBON_API_BASE_URL,
+  CARBON_API_KEY,
   FIELDKIT_CARBON_COMPANY_ID,
 } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 
-import type { CarbonContact, CarbonCustomer } from "./types";
-
-let cachedClient: SupabaseClient | null = null;
+import type { CarbonContact } from "./types";
 
 /**
- * Returns a process-wide Supabase service-role client pointed at Carbon's
- * Supabase project. Throws when the relevant env vars are missing — we'd
- * rather fail loudly than silently no-op a sync attempt.
+ * Returns Carbon API config or throws when misconfigured. Use at the top of
+ * any sync entry point so misconfigured deploys fail loudly instead of
+ * silently no-op'ing.
  */
-function getCarbonClient(): SupabaseClient {
-  if (cachedClient) return cachedClient;
-
-  if (!CARBON_SUPABASE_URL || !CARBON_SUPABASE_SERVICE_ROLE_KEY) {
+function requireCarbonConfig(): { baseUrl: string; apiKey: string } {
+  if (!CARBON_API_BASE_URL || !CARBON_API_KEY) {
     throw new ShelfError({
       cause: null,
       message:
-        "Carbon Supabase is not configured. Set CARBON_SUPABASE_URL and CARBON_SUPABASE_SERVICE_ROLE_KEY.",
+        "Carbon API is not configured. Set CARBON_API_BASE_URL and CARBON_API_KEY.",
       label: "Carbon Sync",
     });
   }
-
-  cachedClient = createClient(
-    CARBON_SUPABASE_URL,
-    CARBON_SUPABASE_SERVICE_ROLE_KEY,
-    {
-      auth: { autoRefreshToken: false, persistSession: false },
-    }
-  );
-  return cachedClient;
+  return { baseUrl: CARBON_API_BASE_URL, apiKey: CARBON_API_KEY };
 }
 
 /**
  * Returns Fieldkit's Carbon company id, or throws if unconfigured. Centralised
- * so every query helper applies the company filter the same way.
+ * so every helper applies the company filter the same way (Carbon's API
+ * already scopes by the API key's company, but we keep the env var for
+ * payload-side validation in webhook.server.ts).
  */
 function requireCompanyId(): string {
   if (!FIELDKIT_CARBON_COMPANY_ID) {
@@ -81,103 +74,143 @@ function requireCompanyId(): string {
   return FIELDKIT_CARBON_COMPANY_ID;
 }
 
-/** Fetch a single Carbon customer by id (scoped to Fieldkit's company). */
+/**
+ * Performs an authenticated GET against Carbon's REST API.
+ *
+ * Carbon's standard list-endpoint response wraps payloads in
+ * `{ data, count, error }` (PostgREST shape). We unwrap, surfacing
+ * Carbon-side errors as ShelfErrors.
+ *
+ * @throws {ShelfError} On non-2xx HTTP, network failure, or `error` set in body.
+ */
+async function carbonGet<T>(path: string): Promise<T> {
+  const { baseUrl, apiKey } = requireCarbonConfig();
+  const url = `${baseUrl}${path}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "carbon-key": apiKey,
+      Accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    throw new ShelfError({
+      cause: null,
+      message: `Carbon API GET ${path} failed: ${res.status} ${res.statusText}`,
+      additionalData: { path, status: res.status },
+      label: "Carbon Sync",
+    });
+  }
+
+  const body = (await res.json()) as {
+    data: T;
+    count?: number | null;
+    error?: { message: string } | null;
+  };
+
+  if (body?.error) {
+    throw new ShelfError({
+      cause: null,
+      message: `Carbon API GET ${path}: ${body.error.message}`,
+      additionalData: { path },
+      label: "Carbon Sync",
+    });
+  }
+
+  return body.data;
+}
+
+/** Subset of Carbon's customer that the list endpoint returns. */
+export type CarbonCustomerLite = { id: string; name: string };
+
+/**
+ * Junction row shape returned by `GET /api/sales/customer-contacts/:customerId`.
+ * Carries the join columns plus the nested `contact` (and a `user` relation
+ * we don't currently use).
+ */
+type CarbonCustomerContactJoinRow = {
+  id: string;
+  customerId: string;
+  contactId: string;
+  customerLocationId: string | null;
+  contact: CarbonContact;
+};
+
+/**
+ * Lists every customer in Fieldkit's Carbon company.
+ *
+ * The REST list endpoint takes no pagination params — it returns all rows at
+ * once via Carbon's internal `fetchAllFromTable` helper. For the volumes
+ * Fieldkit deals with (hundreds of customers) this is fine.
+ *
+ * Returns `{ id, name }` — no `mergedIntoCustomerId` etc. Webhook UPDATE
+ * events fill in additional columns; this is the backfill path.
+ */
+export async function listCustomers(): Promise<CarbonCustomerLite[]> {
+  // Touch the company id so unconfigured deploys fail at the call site
+  // even though Carbon scopes by the API key already.
+  requireCompanyId();
+  return carbonGet<CarbonCustomerLite[]>("/api/sales/customers");
+}
+
+/**
+ * Lists all `customerContact` joins (with nested `contact`) for one customer.
+ */
+export async function listCustomerContacts(
+  carbonCustomerId: string
+): Promise<CarbonCustomerContactJoinRow[]> {
+  requireCompanyId();
+  return carbonGet<CarbonCustomerContactJoinRow[]>(
+    `/api/sales/customer-contacts/${encodeURIComponent(carbonCustomerId)}`
+  );
+}
+
+/**
+ * Looks up a single contact by id, scoped to the parent customer (which the
+ * caller knows from the customerContact webhook payload). Returns null if
+ * the contact isn't found in that customer's contact list — typically means
+ * the contact was already removed from the customer at Carbon.
+ */
+export async function fetchContactInCustomer(args: {
+  carbonCustomerId: string;
+  carbonContactId: string;
+}): Promise<CarbonContact | null> {
+  const rows = await listCustomerContacts(args.carbonCustomerId);
+  const match = rows.find((row) => row.contactId === args.carbonContactId);
+  return match?.contact ?? null;
+}
+
+/**
+ * Looks up a single customer (lite) by id. Filters the full list since
+ * Carbon doesn't expose a single-customer endpoint. Cheap because the list
+ * is just `{ id, name }` per row.
+ */
 export async function fetchCustomerById(
   carbonCustomerId: string
-): Promise<CarbonCustomer | null> {
-  const companyId = requireCompanyId();
-  const { data, error } = await getCarbonClient()
-    .from("customer")
-    .select(
-      "id, name, companyId, customerTypeId, customerStatusId, mergedIntoCustomerId, createdAt, updatedAt"
-    )
-    .eq("id", carbonCustomerId)
-    .eq("companyId", companyId)
-    .maybeSingle();
-
-  if (error) {
-    throw new ShelfError({
-      cause: error,
-      message: `Carbon: failed to fetch customer ${carbonCustomerId}`,
-      label: "Carbon Sync",
-      additionalData: { carbonCustomerId },
-    });
-  }
-  return data as CarbonContact | null as CarbonCustomer | null;
-}
-
-/** Fetch a single Carbon contact by id (scoped to Fieldkit's company). */
-export async function fetchContactById(
-  carbonContactId: string
-): Promise<CarbonContact | null> {
-  const companyId = requireCompanyId();
-  const { data, error } = await getCarbonClient()
-    .from("contact")
-    .select(
-      "id, companyId, email, firstName, lastName, fullName, title, createdAt, updatedAt"
-    )
-    .eq("id", carbonContactId)
-    .eq("companyId", companyId)
-    .maybeSingle();
-
-  if (error) {
-    throw new ShelfError({
-      cause: error,
-      message: `Carbon: failed to fetch contact ${carbonContactId}`,
-      label: "Carbon Sync",
-      additionalData: { carbonContactId },
-    });
-  }
-  return data as CarbonContact | null;
+): Promise<CarbonCustomerLite | null> {
+  const all = await listCustomers();
+  return all.find((c) => c.id === carbonCustomerId) ?? null;
 }
 
 /**
- * Iterates all customers in Fieldkit's Carbon company, optionally filtered
- * by `updatedAt > since`. Yields one row at a time so callers can process
- * with bounded memory.
- *
- * Pagination uses Supabase's `range()` (offset-based). Carbon stores ~hundreds
- * of customers, not millions, so offset paging is fine here.
+ * Async generator over all customers (yields one at a time). Mirrors the
+ * `for await ... of` API the reconciliation loop expects.
  */
 export async function* iterateCustomers(opts: {
+  /** Reserved for future use; Carbon's list endpoint takes no `since` param. */
   since?: string;
-}): AsyncGenerator<CarbonCustomer> {
-  const companyId = requireCompanyId();
-  const pageSize = 200;
-  let from = 0;
-
-  while (true) {
-    let query = getCarbonClient()
-      .from("customer")
-      .select(
-        "id, name, companyId, customerTypeId, customerStatusId, mergedIntoCustomerId, createdAt, updatedAt"
-      )
-      .eq("companyId", companyId)
-      .order("createdAt", { ascending: true })
-      .range(from, from + pageSize - 1);
-
-    if (opts.since) query = query.gt("updatedAt", opts.since);
-
-    const { data, error } = await query;
-    if (error) {
-      throw new ShelfError({
-        cause: error,
-        message: "Carbon: failed to page customers in reconcile",
-        label: "Carbon Sync",
-      });
-    }
-    if (!data || data.length === 0) return;
-
-    for (const row of data) yield row as CarbonCustomer;
-    if (data.length < pageSize) return;
-    from += pageSize;
-  }
+}): AsyncGenerator<CarbonCustomerLite> {
+  // Suppress unused-arg warning while preserving the API for later when
+  // Carbon adds incremental support.
+  void opts.since;
+  const customers = await listCustomers();
+  for (const customer of customers) yield customer;
 }
 
 /**
- * The shape returned per junction row for the reconciliation pass. Combines
- * the `customerContact` link with its parent `contact` so callers can upsert
- * a shelf User in one pass.
+ * The shape returned per junction row for the reconciliation pass — combines
+ * the `customerContact` link with its parent `contact`.
  */
 export type CustomerContactWithContact = {
   customerId: string;
@@ -185,59 +218,25 @@ export type CustomerContactWithContact = {
 };
 
 /**
- * Iterates `customerContact` joins with their parent `contact` row for the
- * Fieldkit company. Used during reconciliation to backfill any contact we
- * missed (or that came in before the parent customer).
+ * Iterates all customer-contact links for the Fieldkit company. Implemented
+ * by listing customers then fetching contacts for each (Carbon has no
+ * "list all customer contacts across customers" endpoint).
+ *
+ * For ~hundreds of customers this is a few seconds of HTTP time per
+ * reconcile pass — acceptable given it runs nightly.
  */
 export async function* iterateCustomerContactsWithContact(opts: {
+  /** Reserved for future use; Carbon's endpoints take no `since` param. */
   since?: string;
 }): AsyncGenerator<CustomerContactWithContact> {
-  const companyId = requireCompanyId();
-  const pageSize = 200;
-  let from = 0;
-
-  while (true) {
-    // Inner-join contact via Supabase's PostgREST relation syntax.
-    // `contact:contactId(...)` resolves the FK and inlines the contact row.
-    let query = getCarbonClient()
-      .from("customerContact")
-      .select(
-        `
-          customerId,
-          contact:contactId (
-            id, companyId, email, firstName, lastName, fullName, title, createdAt, updatedAt
-          )
-        `
-      )
-      .eq("companyId", companyId)
-      .range(from, from + pageSize - 1);
-
-    if (opts.since) query = query.gt("updatedAt", opts.since);
-
-    const { data, error } = await query;
-    if (error) {
-      throw new ShelfError({
-        cause: error,
-        message: "Carbon: failed to page customerContact in reconcile",
-        label: "Carbon Sync",
-      });
-    }
-    if (!data || data.length === 0) return;
-
-    for (const row of data) {
-      // Supabase types relations as arrays; pick the single contact.
-      const rawContact = (
-        row as unknown as { contact: CarbonContact | CarbonContact[] | null }
-      ).contact;
-      const contact = Array.isArray(rawContact) ? rawContact[0] : rawContact;
-      if (!contact) continue;
+  void opts.since;
+  for await (const customer of iterateCustomers({})) {
+    const rows = await listCustomerContacts(customer.id);
+    for (const row of rows) {
       yield {
-        customerId: (row as unknown as { customerId: string }).customerId,
-        contact,
+        customerId: customer.id,
+        contact: row.contact,
       };
     }
-
-    if (data.length < pageSize) return;
-    from += pageSize;
   }
 }
