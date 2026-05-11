@@ -6,17 +6,18 @@ import type {
   LoaderFunctionArgs,
   MetaFunction,
 } from "react-router";
-import { redirect, data, useLoaderData, Outlet } from "react-router";
+import { redirect, data, Form, useLoaderData, Outlet } from "react-router";
 import { z } from "zod";
 import { setReminderSchema } from "~/components/asset-reminder/set-or-edit-reminder-dialog";
 import ActionsDropdown from "~/components/assets/actions-dropdown";
 import { AssetImage } from "~/components/assets/asset-image/component";
 import { AssetStatusBadge } from "~/components/assets/asset-status-badge";
 import BookingActionsDropdown from "~/components/assets/booking-actions-dropdown";
-
 import Header from "~/components/layout/header";
+
 import type { HeaderData } from "~/components/layout/header/types";
 import HorizontalTabs from "~/components/layout/horizontal-tabs";
+import { Button } from "~/components/shared/button";
 import When from "~/components/when/when";
 import { useUserRoleHelper } from "~/hooks/user-user-role-helper";
 import {
@@ -31,6 +32,7 @@ import {
   validateBarcodeValue,
   normalizeBarcodeValue,
 } from "~/modules/barcode/validation";
+import { listCustomers as listCarbonCustomers } from "~/modules/carbon-sync/client.server";
 import assetCss from "~/styles/asset.css?url";
 
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
@@ -101,9 +103,24 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       title: asset.title,
     };
 
+    // Fieldkit: load the Carbon customer list for the customer-assignment
+    // UI on this page. Staff-only — CUSTOMER role users don't see the
+    // assignment widget, so we skip the REST call for them.
+    let carbonCustomers: { id: string; name: string }[] = [];
+    if (!perm.isCustomer) {
+      try {
+        carbonCustomers = await listCarbonCustomers();
+      } catch {
+        // Carbon REST may be misconfigured / down; degrade gracefully.
+        // The assignment widget just won't render its dropdown.
+        carbonCustomers = [];
+      }
+    }
+
     return payload({
       asset,
       header,
+      carbonCustomers,
     });
   } catch (cause) {
     const reason = makeShelfError(cause);
@@ -318,9 +335,14 @@ export const links: LinksFunction = () => [
 ];
 
 export default function AssetDetailsPage() {
-  const { asset } = useLoaderData<typeof loader>();
+  const { asset, carbonCustomers } = useLoaderData<typeof loader>();
 
-  const { roles } = useUserRoleHelper();
+  const { roles, isCustomer } = useUserRoleHelper();
+  const canAssignCustomer = userHasPermission({
+    roles,
+    entity: PermissionEntity.customer,
+    action: PermissionAction.update,
+  });
 
   const items = [
     { to: "overview", content: "Overview" },
@@ -378,9 +400,80 @@ export default function AssetDetailsPage() {
         <BookingActionsDropdown />
       </Header>
       <HorizontalTabs items={items} />
+      {canAssignCustomer && !isCustomer ? (
+        <CustomerAssignmentCard
+          assetId={asset.id}
+          currentCarbonCustomerId={asset.carbonCustomerId}
+          carbonCustomers={carbonCustomers}
+        />
+      ) : null}
       <div>
         <Outlet />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Inline card on the asset detail page that lets staff assign or clear
+ * which Carbon customer this asset is stored for. Submits to the existing
+ * `/api/customers/assign-assets` endpoint (intent `assign-customer`,
+ * `assetIds = [this asset]`). On success the loader revalidates and the
+ * card re-renders with the new selection.
+ */
+function CustomerAssignmentCard({
+  assetId,
+  currentCarbonCustomerId,
+  carbonCustomers,
+}: {
+  assetId: string;
+  currentCarbonCustomerId: string | null;
+  carbonCustomers: { id: string; name: string }[];
+}) {
+  const currentCustomerName = currentCarbonCustomerId
+    ? carbonCustomers.find((c) => c.id === currentCarbonCustomerId)?.name ??
+      null
+    : null;
+  return (
+    <div className="my-4 rounded border border-gray-200 bg-white p-4 md:p-6">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">
+            Stored for customer
+          </h3>
+          <p className="text-xs text-gray-500">
+            {currentCarbonCustomerId
+              ? `Currently assigned to ${
+                  currentCustomerName ??
+                  "(unknown customer — id " + currentCarbonCustomerId + ")"
+                }.`
+              : "Not assigned — this asset is currently Fieldkit-owned inventory."}
+          </p>
+        </div>
+      </div>
+      <Form
+        method="post"
+        action="/api/customers/assign-assets"
+        className="flex flex-wrap items-center gap-2"
+      >
+        <input type="hidden" name="intent" value="assign-customer" />
+        <input type="hidden" name="assetIds" value={assetId} />
+        <select
+          name="carbonCustomerId"
+          defaultValue={currentCarbonCustomerId ?? ""}
+          className="min-w-[260px] rounded border border-gray-200 px-3 py-1.5 text-sm"
+        >
+          <option value="">— Not assigned (Fieldkit-owned) —</option>
+          {carbonCustomers.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <Button type="submit" size="sm" variant="secondary">
+          Save
+        </Button>
+      </Form>
     </div>
   );
 }

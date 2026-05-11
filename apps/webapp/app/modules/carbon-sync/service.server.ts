@@ -304,46 +304,63 @@ export async function upsertUserFromContact(args: {
 }
 
 // =============================================================================
-// Consumable Asset provisioning (item events)
+// Asset provisioning (item events)
 // =============================================================================
 
 /**
- * Returns true if this Carbon item should appear as a CONSUMABLE Asset in
- * Shelf. Inventory- or Batch-tracked items with `visibleInShelf = true`
- * qualify. Serial-tracked items don't get one CONSUMABLE Asset — they get
- * one INSTANCE Asset *per unit* (provisioned via the Shelf intake API,
- * not here). Non-Inventory items never appear in Shelf.
+ * Returns the {@link AssetKind} a Carbon item should map to in Shelf, or
+ * `null` if the item should not appear at all.
+ *
+ * Rules:
+ *
+ *   Serial            → INSTANCE (always — Serial items unconditionally
+ *                       become Shelf Assets; `visibleInShelf` is not
+ *                       consulted for Serial-tracked items)
+ *   Inventory / Batch → CONSUMABLE only when `visibleInShelf = true`
+ *                       (consumables default to hidden in Shelf;
+ *                       operators opt-in per item)
+ *   Non-Inventory     → no Asset (services, labor, etc.)
+ *
+ * Items must also be active and not blocked.
  */
-function isConsumableForShelf(item: CarbonItem): boolean {
-  if (!item.visibleInShelf) return false;
-  if (!item.active) return false;
-  if (item.blocked) return false;
-  return (
-    item.itemTrackingType === "Inventory" || item.itemTrackingType === "Batch"
-  );
+function shelfAssetKindFor(item: CarbonItem): "INSTANCE" | "CONSUMABLE" | null {
+  if (!item.active) return null;
+  if (item.blocked) return null;
+  // Serial items ALWAYS sync — they're unique physical things and there's no
+  // reason to hide one from Shelf. The `visibleInShelf` column exists on the
+  // table but is ignored here for Serial.
+  if (item.itemTrackingType === "Serial") return "INSTANCE";
+  // Consumables are opt-in.
+  if (!item.visibleInShelf) return null;
+  if (
+    item.itemTrackingType === "Inventory" ||
+    item.itemTrackingType === "Batch"
+  ) {
+    return "CONSUMABLE";
+  }
+  return null; // Non-Inventory and anything else
 }
 
 /**
- * Handles `item` INSERT/UPDATE webhook events. Provisions or refreshes a
- * CONSUMABLE Asset when the item qualifies (see {@link isConsumableForShelf}).
- * If the item was previously visible but no longer qualifies, archives the
- * existing CONSUMABLE Asset(s).
+ * Handles `item` INSERT/UPDATE webhook events. Provisions or refreshes one
+ * Shelf Asset when the item qualifies (see {@link shelfAssetKindFor}). If
+ * the item was previously visible but no longer qualifies, archives any
+ * existing Asset rows for that carbonPartId.
  *
  * Idempotent: safe to call repeatedly with the same payload.
  */
 export async function upsertItemForShelf(item: CarbonItem) {
   const organizationId = getPrimaryOrganizationId();
+  const kind = shelfAssetKindFor(item);
 
-  if (!isConsumableForShelf(item)) {
-    // Either visibility was turned off, the item was deactivated, or it's a
-    // serial-tracked item we don't mint a CONSUMABLE for. Archive any
-    // existing CONSUMABLE row that points at this carbonPartId so the
-    // booking forms stop offering it.
+  if (!kind) {
+    // Either visibility was turned off, the item was deactivated, blocked,
+    // or it's Non-Inventory. Archive any existing Asset row that points
+    // at this carbonPartId so it stops appearing in booking forms.
     await db.asset.updateMany({
       where: {
         organizationId,
         carbonPartId: item.id,
-        kind: "CONSUMABLE",
       },
       data: {
         availableToBook: false,
@@ -367,14 +384,14 @@ export async function upsertItemForShelf(item: CarbonItem) {
     });
   }
 
-  // Find existing CONSUMABLE Asset for this item, or create one.
+  // Find existing Shelf Asset for this item (regardless of current kind),
+  // or create a new one.
   const existing = await db.asset.findFirst({
     where: {
       organizationId,
       carbonPartId: item.id,
-      kind: "CONSUMABLE",
     },
-    select: { id: true },
+    select: { id: true, kind: true },
   });
 
   if (existing) {
@@ -385,6 +402,8 @@ export async function upsertItemForShelf(item: CarbonItem) {
         description: item.description ?? undefined,
         thumbnailImage: item.thumbnailUrl ?? undefined,
         availableToBook: true,
+        // Update kind if Carbon's tracking type changed (rare).
+        kind,
       },
     });
     return existing.id;
@@ -397,15 +416,16 @@ export async function upsertItemForShelf(item: CarbonItem) {
       title: item.name,
       description: item.description,
       thumbnailImage: item.thumbnailUrl,
-      kind: "CONSUMABLE",
+      kind,
       carbonPartId: item.id,
       availableToBook: true,
     },
     select: { id: true },
   });
 
-  Logger.info("[Carbon Sync] Provisioned CONSUMABLE asset", {
+  Logger.info("[Carbon Sync] Provisioned Shelf asset", {
     assetId: created.id,
+    kind,
     carbonPartId: item.id,
   });
   return created.id;
