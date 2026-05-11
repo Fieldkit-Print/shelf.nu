@@ -164,6 +164,33 @@ CREATE OR REPLACE VIEW public_api.v1_warehouse_pricing AS
 GRANT SELECT ON public_api.v1_warehouse_pricing TO shelf_fdw_reader;
 
 -- -----------------------------------------------------------------------------
+-- v1_item_ledger
+--
+-- Subset of `itemLedger` rows exposing the columns Shelf needs to (a)
+-- backfill INSTANCE Assets from existing tracked entities and (b)
+-- diagnose webhook delivery gaps. Snake-case column aliases keep the
+-- contract Shelf-friendly.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW public_api.v1_item_ledger AS
+  SELECT
+    il.id,
+    il."entryNumber"        AS entry_number,
+    il."postingDate"        AS posting_date,
+    il."entryType"::text    AS entry_type,
+    il."documentType"::text AS document_type,
+    il."documentId"         AS document_id,
+    il."itemId"             AS item_id,
+    il."itemReadableId"     AS item_readable_id,
+    il."trackedEntityId"    AS tracked_entity_id,
+    il."locationId"         AS location_id,
+    il.quantity,
+    il."companyId"          AS company_id,
+    il."createdAt"          AS created_at
+  FROM public."itemLedger" il;
+
+GRANT SELECT ON public_api.v1_item_ledger TO shelf_fdw_reader;
+
+-- -----------------------------------------------------------------------------
 -- v1_tracked_entities
 --
 -- One row per physical unit (serial-tracked items) or per batch
