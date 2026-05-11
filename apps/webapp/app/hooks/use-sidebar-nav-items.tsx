@@ -8,6 +8,7 @@ import {
   ClipboardCheckIcon,
   FileBarChartIcon,
   HomeIcon,
+  InboxIcon,
   MapPinIcon,
   MessageCircleIcon,
   Package,
@@ -168,6 +169,14 @@ export function useSidebarNavItems() {
           disabled: bookingDisabled,
         },
       ],
+    },
+    {
+      // Fieldkit customer-portal request/approval flow. CUSTOMER users see
+      // their submitted requests; Fieldkit staff see the org-wide queue.
+      type: "child",
+      title: isCustomer ? "Requests" : "Booking requests",
+      to: "/requests",
+      Icon: InboxIcon,
     },
     {
       type: "child",

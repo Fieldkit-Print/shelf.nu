@@ -128,6 +128,8 @@ const mockKitData = {
   imageExpiration: null,
   createdAt: new Date(),
   updatedAt: new Date(),
+  carbonCustomerId: null,
+  rentable: false,
 };
 
 const mockCreateParams = {

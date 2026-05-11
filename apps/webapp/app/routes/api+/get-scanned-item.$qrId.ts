@@ -38,12 +38,56 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
   const searchParams = getCurrentSearchParams(request);
 
   try {
-    const { organizationId } = await requirePermission({
+    const perm = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.qr,
       action: PermissionAction.read,
     });
+    const { organizationId, isCustomer, carbonCustomerId } = perm;
+
+    /**
+     * Returns true if a CUSTOMER user is allowed to see this asset's data.
+     * Visible = (customer owns the asset) OR (Fieldkit-owned rentable pool).
+     * For non-CUSTOMER roles, returns true unconditionally.
+     */
+    const assetVisibleToCustomer = (asset: {
+      carbonCustomerId: string | null;
+      rentable: boolean;
+    }) => {
+      if (!isCustomer) return true;
+      if (asset.carbonCustomerId === carbonCustomerId) return true;
+      return asset.carbonCustomerId === null && asset.rentable === true;
+    };
+
+    /**
+     * Same predicate for kits (mirrors Asset semantics — kits also have
+     * carbonCustomerId + rentable fields).
+     */
+    const kitVisibleToCustomer = (kit: {
+      carbonCustomerId: string | null;
+      rentable: boolean;
+    }) => {
+      if (!isCustomer) return true;
+      if (kit.carbonCustomerId === carbonCustomerId) return true;
+      return kit.carbonCustomerId === null && kit.rentable === true;
+    };
+
+    /**
+     * Builds the "unknown QR" error. We return the same shape for both
+     * truly-unknown QRs and QRs that resolve to assets/kits this CUSTOMER
+     * cannot see, so customers can't enumerate other customers' QRs by
+     * timing or error-message differentials.
+     */
+    const unknownQrError = () =>
+      new ShelfError({
+        cause: null,
+        message:
+          "This code doesn't exist or it doesn't belong to your current organization.",
+        additionalData: { qrId: params.qrId, shouldSendNotification: false },
+        label: "QR",
+        shouldBeCaptured: false,
+      });
 
     const { qrId } = getParams(params, z.object({ qrId: z.string() }), {
       additionalData: {
@@ -115,6 +159,12 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
           label: "Scan",
           shouldBeCaptured: false,
         });
+      }
+
+      // Customer-tenancy guard. Return the same unknown-QR error shape rather
+      // than a 403 so CUSTOMER users can't enumerate other customers' SAM IDs.
+      if (!assetVisibleToCustomer(asset)) {
+        throw unknownQrError();
       }
 
       // If audit session ID provided, fetch the auditAssetId and counts
@@ -195,6 +245,16 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
         shouldBeCaptured: false,
         label: "QR",
       });
+    }
+
+    // Customer-tenancy guard on QR-resolved asset/kit. Same unknown-QR error
+    // shape on mismatch so CUSTOMER users can't enumerate other customers'
+    // codes via error-message differentials.
+    if (qr.asset && !assetVisibleToCustomer(qr.asset)) {
+      throw unknownQrError();
+    }
+    if (qr.kit && !kitVisibleToCustomer(qr.kit)) {
+      throw unknownQrError();
     }
 
     // If audit session ID provided, fetch the auditAssetId and counts

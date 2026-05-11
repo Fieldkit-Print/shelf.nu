@@ -46,6 +46,7 @@ import { payload, error, getCurrentSearchParams } from "~/utils/http.server";
 import { getParamsValues } from "~/utils/list";
 import { parseMarkdownToReact } from "~/utils/md";
 import { isPersonalOrg } from "~/utils/organization";
+import { buildCustomerBookingScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -79,18 +80,20 @@ export const loader = async ({ request, context }: LoaderFunctionArgs) => {
   const { userId } = authSession;
 
   try {
+    const perm = await requirePermission({
+      userId,
+      request,
+      entity: PermissionEntity.booking,
+      action: PermissionAction.read,
+    });
     const {
       isSelfServiceOrBase,
       currentOrganization,
       organizationId,
       canSeeAllBookings,
       canSeeAllCustody,
-    } = await requirePermission({
-      userId,
-      request,
-      entity: PermissionEntity.booking,
-      action: PermissionAction.read,
-    });
+    } = perm;
+    const customerScope = buildCustomerBookingScope(perm, userId);
 
     if (isPersonalOrg(currentOrganization)) {
       throw new ShelfError({
@@ -141,6 +144,7 @@ export const loader = async ({ request, context }: LoaderFunctionArgs) => {
           userId,
           canSeeAllBookings,
           canSeeAllCustody,
+          customerScope,
         }),
       ]);
 

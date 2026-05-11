@@ -8,6 +8,11 @@ import { makeShelfError } from "~/utils/error";
 import { payload, error } from "~/utils/http.server";
 import { isPersonalOrg } from "~/utils/organization";
 import {
+  buildCustomerAssetScope,
+  buildCustomerBookingScope,
+  buildCustomerKitScope,
+} from "~/utils/permissions/customer-scope.server";
+import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
@@ -43,19 +48,21 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       );
     }
 
+    const perm = await requirePermission({
+      userId,
+      request,
+      entity: PermissionEntity.commandPaletteSearch,
+      action: PermissionAction.read,
+    });
     const {
       organizationId,
       role,
       canSeeAllBookings,
       canSeeAllCustody,
       isSelfServiceOrBase,
+      isCustomer,
       currentOrganization,
-    } = await requirePermission({
-      userId,
-      request,
-      entity: PermissionEntity.commandPaletteSearch,
-      action: PermissionAction.read,
-    });
+    } = perm;
 
     const terms = query
       .split(/[\s,]+/)
@@ -149,30 +156,62 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
     // Check if this is a personal workspace - they don't have bookings or team members
     const isPersonalWorkspace = isPersonalOrg(currentOrganization);
 
-    // Check permissions for different entity types based on actual roles
-    const hasKitPermission = ["OWNER", "ADMIN"].includes(role);
+    // Check permissions for different entity types based on actual roles.
+    // CUSTOMER role gets kit + booking search scoped to their carbonCustomerId.
+    // Locations, audits, team members are internal Fieldkit surfaces and
+    // are never returned to CUSTOMER users.
+    const hasKitPermission =
+      ["OWNER", "ADMIN"].includes(role) || isCustomer;
     const hasBookingPermission =
       !isPersonalWorkspace &&
-      ["OWNER", "ADMIN", "SELF_SERVICE", "BASE"].includes(role);
-    const hasLocationPermission = ["OWNER", "ADMIN"].includes(role);
+      (["OWNER", "ADMIN", "SELF_SERVICE", "BASE"].includes(role) || isCustomer);
+    const hasLocationPermission =
+      ["OWNER", "ADMIN"].includes(role) && !isCustomer;
     const hasTeamMemberPermission =
-      !isPersonalWorkspace && ["OWNER", "ADMIN"].includes(role);
-    const hasAuditPermission = true;
+      !isPersonalWorkspace &&
+      ["OWNER", "ADMIN"].includes(role) &&
+      !isCustomer;
+    const hasAuditPermission = !isCustomer;
+
+    // Customer-tenancy filters. Empty for non-CUSTOMER roles.
+    const kitCustomerScope = buildCustomerKitScope(perm);
+    const bookingCustomerScope = buildCustomerBookingScope(perm, userId);
+    const assetCustomerScope = buildCustomerAssetScope(perm, {
+      includeRentable: true,
+    });
 
     // Prepare where clauses for other entities
 
+    // Search OR clauses collide with customer-scope OR clauses, so they are
+    // AND-merged via a top-level AND array.
     const kitWhere: Prisma.KitWhereInput = {
       organizationId,
-      ...(kitSearchConditions.length ? { OR: kitSearchConditions } : {}),
+      AND: [
+        ...(kitSearchConditions.length
+          ? [{ OR: kitSearchConditions } as Prisma.KitWhereInput]
+          : []),
+        ...(Object.keys(kitCustomerScope).length > 0
+          ? [kitCustomerScope]
+          : []),
+      ],
     };
 
     const bookingWhere: Prisma.BookingWhereInput = {
       organizationId,
-      ...(bookingSearchConditions.length
-        ? { OR: bookingSearchConditions }
-        : {}),
-      // BASE and SELF_SERVICE users can only see their own bookings unless org settings allow otherwise
-      ...(canSeeAllBookings ? {} : { custodianUserId: userId }),
+      AND: [
+        ...(bookingSearchConditions.length
+          ? [{ OR: bookingSearchConditions } as Prisma.BookingWhereInput]
+          : []),
+        ...(Object.keys(bookingCustomerScope).length > 0
+          ? [bookingCustomerScope]
+          : []),
+      ],
+      // BASE and SELF_SERVICE users can only see their own bookings unless org settings allow otherwise.
+      // CUSTOMER scope (above) is stricter than canSeeAllBookings so we keep
+      // both — Prisma ANDs the top-level conditions.
+      ...(canSeeAllBookings || isCustomer
+        ? {}
+        : { custodianUserId: userId }),
     };
 
     const locationWhere: Prisma.LocationWhereInput = {
@@ -232,7 +271,9 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
     // Execute parallel searches
     const [assetResults, audits, kits, bookings, locations, teamMembers] =
       await Promise.all([
-        // Assets (always allowed) - using enhanced search from asset service
+        // Assets (always allowed) - using enhanced search from asset service.
+        // Customer-tenancy scope is threaded so CUSTOMER users see only their
+        // own assets + Fieldkit's rentable pool.
         getAssets({
           search: query,
           organizationId,
@@ -240,6 +281,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
           orderBy: "title",
           orderDirection: "asc",
           perPage: 8,
+          customerScope: assetCustomerScope,
           extraInclude: {
             barcodes: {
               select: { id: true, value: true, type: true },

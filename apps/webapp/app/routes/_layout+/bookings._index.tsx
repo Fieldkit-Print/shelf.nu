@@ -49,6 +49,7 @@ import { computeHasActiveFilters } from "~/utils/filter-params";
 import { payload, error } from "~/utils/http.server";
 import { parseMarkdownToReact } from "~/utils/md";
 import { isPersonalOrg } from "~/utils/organization";
+import { buildCustomerBookingScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -73,18 +74,20 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
   const { userId } = authSession;
 
   try {
+    const perm = await requirePermission({
+      userId,
+      request,
+      entity: PermissionEntity.booking,
+      action: PermissionAction.read,
+    });
     const {
       organizationId,
       currentOrganization,
       isSelfServiceOrBase,
       canSeeAllBookings,
       canSeeAllCustody,
-    } = await requirePermission({
-      userId,
-      request,
-      entity: PermissionEntity.booking,
-      action: PermissionAction.read,
-    });
+    } = perm;
+    const customerScope = buildCustomerBookingScope(perm, userId);
 
     if (isPersonalOrg(currentOrganization)) {
       throw new ShelfError({
@@ -148,6 +151,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
         orderBy,
         orderDirection,
         tags: filterTags,
+        customerScope,
         extraInclude: { tags: TAG_WITH_COLOR_SELECT },
       }),
 

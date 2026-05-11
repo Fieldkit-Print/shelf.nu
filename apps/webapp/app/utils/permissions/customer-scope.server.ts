@@ -134,3 +134,36 @@ export function assertCustomerLinkage(
     );
   }
 }
+
+/**
+ * Builds the mandatory Prisma `Kit` scope for a CUSTOMER user.
+ *
+ * Kit ownership mirrors Asset ownership:
+ *   - `Kit.carbonCustomerId = perm.carbonCustomerId` → the customer's own kit
+ *   - `Kit.carbonCustomerId IS NULL AND Kit.rentable = true` → Fieldkit-owned
+ *     rentable bundle that any customer may rent (subject to
+ *     `CustomerContactPermission.canRentInventory` check at the action layer)
+ *
+ * Internal Fieldkit kits (`carbonCustomerId IS NULL AND rentable = false`)
+ * are never visible to CUSTOMER users.
+ *
+ * For non-CUSTOMER roles this returns an empty object so the helper is safe
+ * to spread unconditionally:
+ *
+ *   where: { organizationId, ...buildCustomerKitScope(perm) }
+ *
+ * @param perm - Result of requirePermission() for the current request
+ * @returns A Prisma `KitWhereInput` fragment to AND-merge into your query
+ */
+export function buildCustomerKitScope(
+  perm: PermissionContext
+): Prisma.KitWhereInput {
+  if (!perm.isCustomer || !perm.carbonCustomerId) return {};
+
+  return {
+    OR: [
+      { carbonCustomerId: perm.carbonCustomerId },
+      { carbonCustomerId: null, rentable: true },
+    ],
+  };
+}

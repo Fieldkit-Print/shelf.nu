@@ -91,6 +91,7 @@ import {
 import { getParamsValues } from "~/utils/list";
 import { logMissingFormIntent } from "~/utils/logger";
 import { wrapLinkForNote, wrapUserLinkForNote } from "~/utils/markdoc-wrappers";
+import { buildCustomerBookingScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -117,18 +118,19 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
   const { perPage } = cookie;
 
   try {
+    const perm = await requirePermission({
+      userId: authSession?.userId,
+      request,
+      entity: PermissionEntity.booking,
+      action: PermissionAction.read,
+    });
     const {
       organizationId,
       isSelfServiceOrBase,
       currentOrganization,
       userOrganizations,
       canSeeAllBookings,
-    } = await requirePermission({
-      userId: authSession?.userId,
-      request,
-      entity: PermissionEntity.booking,
-      action: PermissionAction.read,
-    });
+    } = perm;
 
     // Get the booking with basic asset information
     const [booking, tags, notifyData] = await Promise.all([
@@ -137,6 +139,7 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
         organizationId: organizationId,
         userOrganizations,
         request,
+        customerScope: buildCustomerBookingScope(perm, authSession?.userId),
         extraInclude: {
           creator: {
             select: {
@@ -618,13 +621,13 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
       updateNotificationRecipients: PermissionAction.update,
     };
 
-    const { organizationId, role, isSelfServiceOrBase } =
-      await requirePermission({
-        userId,
-        request,
-        entity: PermissionEntity.booking,
-        action: intent2ActionMap[intent],
-      });
+    const actionPerm = await requirePermission({
+      userId,
+      request,
+      entity: PermissionEntity.booking,
+      action: intent2ActionMap[intent],
+    });
+    const { organizationId, role, isSelfServiceOrBase } = actionPerm;
 
     // ADMIN/OWNER users bypass time restrictions (bufferStartTime, maxBookingLength)
     const isAdminOrOwner = !isSelfServiceOrBase;
@@ -654,7 +657,12 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
          * They have delete permissions but shouldnt be able to delete other people's bookings
          * Practically they should not be able to even view/access another booking but this is just an extra security measure
          */
-        const b = await getBooking({ id, organizationId, request });
+        const b = await getBooking({
+          id,
+          organizationId,
+          request,
+          customerScope: buildCustomerBookingScope(actionPerm, userId),
+        });
         validateBookingOwnership({
           booking: b,
           userId,

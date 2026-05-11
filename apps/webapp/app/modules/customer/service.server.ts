@@ -112,6 +112,13 @@ export async function listCustomers(args: {
 export type CustomerDetail = {
   id: string;
   displayName: string;
+  /**
+   * Shelf-local per-customer settings. `null` when no row has been written
+   * yet — treat as all defaults (`requiresInternalApproval = false`).
+   */
+  setting: {
+    requiresInternalApproval: boolean;
+  } | null;
   contacts: Array<{
     /** Shelf User id (null when the Carbon contact has no shelf User yet). */
     userId: string | null;
@@ -125,6 +132,7 @@ export type CustomerDetail = {
       canRentInventory: boolean;
       canViewBilling: boolean;
       canManageOtherContacts: boolean;
+      canApproveBookings: boolean;
     } | null;
   }>;
   assetCount: number;
@@ -192,7 +200,7 @@ export async function getCustomerDetail(args: {
       .map((u) => [u.carbonContactId as string, u])
   );
 
-  const [assetCount, assetRows] = await Promise.all([
+  const [assetCount, assetRows, setting] = await Promise.all([
     db.asset.count({ where: { organizationId, carbonCustomerId } }),
     db.asset.findMany({
       where: { organizationId, carbonCustomerId },
@@ -208,6 +216,10 @@ export async function getCustomerDetail(args: {
         kind: true,
         availableToBook: true,
       },
+    }),
+    db.customerSetting.findUnique({
+      where: { carbonCustomerId },
+      select: { requiresInternalApproval: true },
     }),
   ]);
 
@@ -226,10 +238,37 @@ export async function getCustomerDetail(args: {
   return {
     id: carbon.id,
     displayName: carbon.name,
+    setting,
     contacts,
     assetCount,
     assets: assetRows,
   };
+}
+
+/**
+ * Upsert the Shelf-local `CustomerSetting` row for a Carbon customer.
+ * Creates the row on first write since CustomerSetting is lazy — no row =
+ * defaults apply.
+ *
+ * Caller is responsible for verifying admin rights upstream
+ * (`requirePermission({ entity: customer, action: update })`).
+ */
+export async function upsertCustomerSetting(args: {
+  organizationId: string;
+  carbonCustomerId: string;
+  patch: { requiresInternalApproval?: boolean };
+}) {
+  return db.customerSetting.upsert({
+    where: { carbonCustomerId: args.carbonCustomerId },
+    create: {
+      carbonCustomerId: args.carbonCustomerId,
+      organizationId: args.organizationId,
+      requiresInternalApproval: args.patch.requiresInternalApproval ?? false,
+    },
+    update: {
+      requiresInternalApproval: args.patch.requiresInternalApproval,
+    },
+  });
 }
 
 /**
@@ -247,6 +286,7 @@ export async function updateContactPermissions(args: {
     canRentInventory?: boolean;
     canViewBilling?: boolean;
     canManageOtherContacts?: boolean;
+    canApproveBookings?: boolean;
   };
 }) {
   // Cross-check linkage before writing.

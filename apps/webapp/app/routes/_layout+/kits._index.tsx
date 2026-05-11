@@ -50,6 +50,7 @@ import { computeHasActiveFilters } from "~/utils/filter-params";
 import { payload, error, getCurrentSearchParams } from "~/utils/http.server";
 import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator";
+import { buildCustomerKitScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -71,12 +72,14 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
   const { userId } = authSession;
 
   try {
-    const { organizationId, canSeeAllCustody, role } = await requirePermission({
+    const perm = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.kit,
       action: PermissionAction.read,
     });
+    const { organizationId, canSeeAllCustody, role } = perm;
+    const customerScope = buildCustomerKitScope(perm);
     const isSelfService = role === OrganizationRoles.SELF_SERVICE;
 
     const searchParams = getCurrentSearchParams(request);
@@ -106,6 +109,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       getPaginatedAndFilterableKits({
         request,
         organizationId,
+        customerScope,
         extraInclude: {
           qrCodes: { select: { id: true } },
           assets: {

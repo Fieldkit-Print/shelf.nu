@@ -18,6 +18,7 @@ import { getClientHint } from "~/utils/client-hints";
 import { formatCurrency } from "~/utils/currency";
 import { makeShelfError } from "~/utils/error";
 import { error, getParams, payload } from "~/utils/http.server";
+import { buildCustomerKitScope } from "~/utils/permissions/customer-scope.server";
 import {
   PermissionAction,
   PermissionEntity,
@@ -41,17 +42,18 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
   });
 
   try {
-    const {
-      organizationId,
-      userOrganizations,
-      canUseBarcodes,
-      currentOrganization,
-    } = await requirePermission({
+    const perm = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.kit,
       action: PermissionAction.read,
     });
+    const {
+      organizationId,
+      userOrganizations,
+      canUseBarcodes,
+      currentOrganization,
+    } = perm;
     const { locale } = getClientHint(request);
 
     const kit = await getKit({
@@ -59,6 +61,7 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       organizationId,
       userOrganizations,
       request,
+      customerScope: buildCustomerKitScope(perm),
       extraInclude: getKitOverviewFields(canUseBarcodes),
     });
 

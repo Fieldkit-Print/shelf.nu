@@ -3118,6 +3118,19 @@ export async function getBookings(params: {
   orderDirection?: SortingDirection;
   kitId?: string;
   tags?: Tag["id"][];
+  /**
+   * CUSTOMER-role tenancy filter. Pass the result of
+   * `buildCustomerBookingScope(perm, userId)` from
+   * `~/utils/permissions/customer-scope.server`. For non-CUSTOMER roles this
+   * is `{}` and acts as a no-op. For CUSTOMER users it restricts results to
+   * bookings where the user is the creator OR the custodian — bookings made
+   * by other contacts at the same Carbon customer remain hidden by default
+   * (use `buildCustomerBookingScope` extensions to broaden if needed).
+   *
+   * AND-merged into the query so it composes with search, date, and status
+   * filters without overriding them.
+   */
+  customerScope?: Prisma.BookingWhereInput;
 }) {
   const {
     organizationId,
@@ -3138,6 +3151,7 @@ export async function getBookings(params: {
     orderDirection = "asc",
     kitId,
     tags,
+    customerScope,
   } = params;
 
   try {
@@ -3312,6 +3326,16 @@ export async function getBookings(params: {
       } else {
         where.tags = { some: { id: { in: tags } } };
       }
+    }
+
+    // Customer-tenancy scope — AND-merged so its OR clause (creator/custodian)
+    // doesn't collide with the date-range OR or the DRAFT-only-for-creator OR
+    // already in `where.AND`.
+    if (customerScope && Object.keys(customerScope).length > 0) {
+      if (!where.AND) {
+        where.AND = [];
+      }
+      (where.AND as Prisma.BookingWhereInput[]).push(customerScope);
     }
 
     const [bookings, bookingCount] = await Promise.all([
@@ -3682,11 +3706,25 @@ export async function getBooking<T extends Prisma.BookingInclude | undefined>(
     userOrganizations?: Pick<UserOrganization, "organizationId">[];
     request: Request;
     extraInclude?: T;
+    /**
+     * CUSTOMER-role tenancy filter. Pass the result of
+     * `buildCustomerBookingScope(perm, userId)`. Empty for non-CUSTOMER roles.
+     * When non-empty, AND-merged into the booking lookup so a CUSTOMER user
+     * receives the standard "Booking not found" 404 if they try to access a
+     * booking they are not the creator or custodian of.
+     */
+    customerScope?: Prisma.BookingWhereInput;
   }
 ) {
   try {
-    const { id, organizationId, userOrganizations, request, extraInclude } =
-      booking;
+    const {
+      id,
+      organizationId,
+      userOrganizations,
+      request,
+      extraInclude,
+      customerScope,
+    } = booking;
 
     // Extract search parameters from request
     const searchParams = getCurrentSearchParams(request);
@@ -3737,13 +3775,23 @@ export async function getBooking<T extends Prisma.BookingInclude | undefined>(
       (org) => org.organizationId
     );
 
+    const hasCustomerScope =
+      customerScope && Object.keys(customerScope).length > 0;
+
     const bookingFound = (await db.booking.findFirstOrThrow({
       where: {
-        OR: [
-          { id, organizationId },
-          ...(userOrganizations?.length
-            ? [{ id, organizationId: { in: otherOrganizationIds } }]
-            : []),
+        AND: [
+          {
+            OR: [
+              { id, organizationId },
+              ...(userOrganizations?.length
+                ? [{ id, organizationId: { in: otherOrganizationIds } }]
+                : []),
+            ],
+          },
+          // Customer-tenancy scope enforced as an additional AND. For
+          // non-CUSTOMER roles this is `{}` which Prisma treats as a no-op.
+          ...(hasCustomerScope ? [customerScope] : []),
         ],
       },
       include: mergedInclude,
@@ -3804,6 +3852,12 @@ export async function getBookingsForCalendar(params: {
   userId: string;
   canSeeAllBookings: boolean;
   canSeeAllCustody: boolean;
+  /**
+   * CUSTOMER-role tenancy filter. Pass `buildCustomerBookingScope(perm, userId)`.
+   * Threaded through to `getBookings` so calendar respects the same isolation
+   * as the bookings index.
+   */
+  customerScope?: Prisma.BookingWhereInput;
 }) {
   const {
     request,
@@ -3811,6 +3865,7 @@ export async function getBookingsForCalendar(params: {
     userId,
     canSeeAllBookings,
     canSeeAllCustody,
+    customerScope,
   } = params;
 
   const { searchParams, search, status, teamMemberIds, tags, selfServiceData } =
@@ -3854,6 +3909,7 @@ export async function getBookingsForCalendar(params: {
       custodianTeamMemberIds: teamMemberIds,
       ...selfServiceData,
       tags,
+      customerScope,
       extraInclude: {
         custodianTeamMember: true,
         custodianUser: true,

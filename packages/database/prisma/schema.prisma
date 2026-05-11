@@ -106,6 +106,14 @@ model User {
   bookings           Booking[]          @relation("creator")
   custodies          Booking[]          @relation("custodian")
   createdKits        Kit[]
+
+  // Booking-request relations. A user can be a requester, an internal customer
+  // approver, or the Fieldkit staff approver for any number of requests. All
+  // three relations are nullable on the request side so they map to set-null
+  // when a user is soft-deleted.
+  bookingRequestsCreated           BookingRequest[] @relation("BookingRequestRequester")
+  bookingRequestsApprovedInternal  BookingRequest[] @relation("BookingRequestInternalApprover")
+  bookingRequestsApprovedFieldkit  BookingRequest[] @relation("BookingRequestFieldkitApprover")
   tierId             TierId             @default(free)
   tier               Tier               @relation(fields: [tierId], references: [id])
   assetReminders     AssetReminder[]
@@ -249,7 +257,18 @@ model Asset {
   /// foreign view. Nullable because some legacy / non-catalog Shelf assets
   /// may not be backed by a Carbon item; new Shelf assets are always
   /// provisioned by Carbon and will have this set.
+  ///
+  /// For INSTANCE Assets, `carbonPartId` is the SKU and `carbonTrackedEntityId`
+  /// (below) is the per-unit identity. For CONSUMABLE Assets,
+  /// `carbonPartId` alone uniquely identifies the row (one Asset per item).
   carbonPartId String?
+
+  /// Reference to Carbon's `trackedEntity.id` — the per-physical-unit row
+  /// for serial-tracked items. Set on INSTANCE Assets minted from
+  /// `itemLedger` receipts; null on CONSUMABLE Assets and legacy rows.
+  /// Acts as the idempotency key for serial provisioning so each
+  /// physical unit maps to exactly one Shelf Asset.
+  carbonTrackedEntityId String? @unique
 
   /// Customer ownership for Fieldkit storage tenancy. References Carbon's
   /// `customer.id` directly (no local Customer mirror — see contract-views.md
@@ -286,6 +305,10 @@ model Asset {
   /// Billing-event ledger entries for this asset. See {@link BillableEvent}.
   billableEvents BillableEvent[]
 
+  /// Booking requests that include this asset (pre-approval). Distinct from
+  /// `bookings` which is the post-approval M2M.
+  bookingRequests BookingRequest[] @relation("BookingRequestAssets")
+
   // Unique constraint for organization-scoped sequential IDs
   @@unique([organizationId, sequentialId], name: "asset_org_sequential_unique")
   // Special GIN index for optimization of simple search queries
@@ -312,12 +335,16 @@ model Asset {
   /// Reverse lookup: find every Shelf Asset for a given Carbon item id
   /// (used when handling Carbon item UPDATE webhooks).
   @@index([carbonPartId], name: "Asset_carbonPartId_idx")
+  /// `@unique` above creates an implicit index — explicit declaration kept
+  /// out to avoid Prisma migration churn. Lookup happens by carbonTrackedEntityId
+  /// from webhook handlers.
 }
 
 /// Discriminator on `Asset` driven by Carbon's `item.itemTrackingType`.
 enum AssetKind {
-  /// One physical unit. Has location, custody, can be checked out individually.
-  /// Mints when Carbon creates a `serialNumber` row (one Asset per serial).
+  /// One physical unit. Has location, custody, can be checked out
+  /// individually. Mints when Carbon's `itemLedger` records a receipt for
+  /// a serial-tracked item (one Asset per `trackedEntity` row).
   INSTANCE
   /// Quantity-tracked consumable batch. Quantity-on-hand lives in Carbon
   /// (read via FDW); Shelf only stores location, customer link, kit/booking
@@ -847,6 +874,13 @@ model Organization {
   /// Fieldkit billing-event ledger. See {@link BillableEvent}.
   billableEvents BillableEvent[]
 
+  /// Per-customer settings owned by Shelf (Carbon owns master customer data
+  /// via FDW). See {@link CustomerSetting}.
+  customerSettings CustomerSetting[]
+
+  /// Customer-initiated booking requests awaiting approval. See {@link BookingRequest}.
+  bookingRequests BookingRequest[]
+
   // Migration flag to track if sequential IDs have been generated for this organization's existing assets
   hasSequentialIdsMigrated Boolean @default(false)
 
@@ -1287,6 +1321,11 @@ model Booking {
   bookingAssetMetas BookingAssetMeta[]
   notes  BookingNote[]
 
+  /// Back-relation to the BookingRequest that produced this Booking. Set on
+  /// the request side when status transitions to APPROVED. Null for bookings
+  /// created directly by Fieldkit staff (no upstream customer request).
+  bookingRequest BookingRequest?
+
   tags            Tag[]
   partialCheckins PartialBookingCheckin[]
 
@@ -1409,6 +1448,22 @@ model Kit {
   location   Location? @relation(fields: [locationId], references: [id])
   locationId String?
 
+  /// Customer ownership for Fieldkit tenancy. Mirrors Asset.carbonCustomerId.
+  /// - null  → Fieldkit-owned (org-level) kit.
+  /// - set   → owned by this Carbon customer; only visible to that customer's
+  ///           contacts.
+  /// References Carbon's `customer.id` directly (no FK, no local mirror;
+  /// reads via FDW view `carbon_remote.v1_customers`).
+  carbonCustomerId String?
+
+  /// When true AND `carbonCustomerId IS NULL`, this Fieldkit-owned kit is
+  /// rentable as a whole bundle by any customer holding
+  /// CustomerContactPermission.canRentInventory. No effect on customer-owned
+  /// kits (carbonCustomerId IS NOT NULL).
+  rentable Boolean @default(false)
+
+  bookingRequests BookingRequest[] @relation("BookingRequestKits")
+
   // Indexes for foreign keys
   @@index([createdById])
   @@index([organizationId])
@@ -1416,6 +1471,10 @@ model Kit {
   @@index([categoryId, organizationId, createdAt]) //for time-based queries
   @@index([categoryId, organizationId, name]) //for name-based searches
   @@index([categoryId, organizationId, status]) //for status filtering
+
+  /// CUSTOMER-role kit queries filter by (organizationId, carbonCustomerId)
+  /// OR (organizationId, carbonCustomerId IS NULL AND rentable).
+  @@index([organizationId, carbonCustomerId], name: "Kit_organizationId_carbonCustomerId_idx")
 }
 
 enum KitStatus {
@@ -1881,6 +1940,7 @@ enum ActivityEntity {
   CUSTODY
   USER
   ORGANIZATION
+  BOOKING_REQUEST
 }
 
 // Additive-only. Never rename or remove values — query compatibility depends
@@ -1915,6 +1975,14 @@ enum ActivityAction {
   BOOKING_PARTIAL_CHECKIN
   BOOKING_CANCELLED
   BOOKING_ARCHIVED
+
+  // BookingRequest (Fieldkit customer-portal request/approval flow)
+  BOOKING_REQUEST_SUBMITTED
+  BOOKING_REQUEST_INTERNAL_APPROVED
+  BOOKING_REQUEST_INTERNAL_REJECTED
+  BOOKING_REQUEST_FIELDKIT_APPROVED
+  BOOKING_REQUEST_FIELDKIT_REJECTED
+  BOOKING_REQUEST_CANCELLED
 
   // Audit
   AUDIT_CREATED
@@ -1999,9 +2067,166 @@ model CustomerContactPermission {
    */
   canManageOtherContacts Boolean @default(false)
 
+  /**
+   * Allow this contact to approve BookingRequests submitted by other contacts
+   * at the same Carbon customer. Meaningful only when the customer's
+   * `CustomerSetting.requiresInternalApproval = true`. Independent of
+   * `canRequestShipment` / `canRentInventory` — a contact can be an approver
+   * without being a requester (and vice versa).
+   */
+  canApproveBookings Boolean @default(false)
+
   // Datetime
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/**
+ * Shelf-local settings for a Carbon customer.
+ *
+ * Carbon owns the master customer record (read via FDW view
+ * `carbon_remote.v1_customers`). This table holds Fieldkit-specific
+ * per-customer config that doesn't belong in Carbon — e.g., whether
+ * a customer wants internal approval before requests reach Fieldkit.
+ *
+ * Rows are created lazily: if no row exists for a `carbonCustomerId`,
+ * services should treat all flags as their default values.
+ *
+ * No FK on `carbonCustomerId` — Carbon's customer table lives in the
+ * `carbon_remote` foreign-data-wrapper schema and Postgres FKs cannot
+ * cross FDW boundaries.
+ */
+model CustomerSetting {
+  carbonCustomerId String @id
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organizationId String
+
+  /// When true, BookingRequests submitted by contacts at this customer must
+  /// first be approved by a CustomerContact with `canApproveBookings = true`
+  /// before reaching Fieldkit staff. When false, requests go directly to
+  /// Fieldkit staff for approval.
+  requiresInternalApproval Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+/**
+ * Customer-initiated booking request, pre-approval lifecycle.
+ *
+ * A BookingRequest is what a CUSTOMER user submits when they want assets
+ * shipped, picked, or rented. Once approved (by Fieldkit staff, optionally
+ * after an internal customer-side approval), a real Booking row is created
+ * and linked here via `bookingId`.
+ *
+ * State machine (see superpowers/plans/2026-05-11-customer-tenancy-and-requests.md):
+ *
+ *                         requires             requires
+ *                         internal?            internal?
+ *                            no                   yes
+ *   DRAFT ── submit ──► PENDING_FIELDKIT      PENDING_INTERNAL
+ *                            │                      │
+ *                            │                      ├─ internal reject → REJECTED
+ *                            │                      └─ internal approve → PENDING_FIELDKIT
+ *                            │
+ *                            ├─ FK reject → REJECTED
+ *                            └─ FK approve → APPROVED (Booking row created in same tx)
+ *
+ * Any non-terminal state: requester can CANCEL → CANCELLED.
+ *
+ * @see {@link BookingRequestStatus}
+ * @see {@link CustomerSetting.requiresInternalApproval}
+ */
+model BookingRequest {
+  id String @id @default(cuid())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organizationId String
+
+  /// Carbon customer this request belongs to. Always set — anonymous /
+  /// staff-initiated requests don't exist (those go straight to Booking).
+  carbonCustomerId String
+
+  requester   User   @relation("BookingRequestRequester", fields: [requesterId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  requesterId String
+
+  status          BookingRequestStatus @default(DRAFT)
+  /// Free-text reason captured at REJECTED or CANCELLED transitions. Surfaced
+  /// in the rejection email back to the requester.
+  rejectionReason String?
+
+  /// Internal customer-side approver. Set when status moves
+  /// PENDING_INTERNAL → PENDING_FIELDKIT (approved) or REJECTED (rejected by
+  /// internal). Null on direct-to-Fieldkit flows (requiresInternalApproval = false).
+  internalApprover   User?     @relation("BookingRequestInternalApprover", fields: [internalApproverId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  internalApproverId String?
+  internalApprovedAt DateTime?
+
+  /// Fieldkit staff approver. Set when status moves PENDING_FIELDKIT → APPROVED
+  /// (approved) or REJECTED (rejected by Fieldkit).
+  fieldkitApprover   User?     @relation("BookingRequestFieldkitApprover", fields: [fieldkitApproverId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  fieldkitApproverId String?
+  fieldkitApprovedAt DateTime?
+
+  /// Requested booking window. Mirrors Booking.from/to once approved; kept
+  /// as separate fields here so we can hold the request without creating a
+  /// Booking row prematurely.
+  proposedFrom    DateTime  @db.Timestamptz(3)
+  proposedTo      DateTime  @db.Timestamptz(3)
+
+  /// Optional shipping address override for picks. Null = use customer's
+  /// default shipping address from Carbon.
+  shippingAddress String?
+  /// Optional free-text from the requester (handling notes, urgency, etc.).
+  notes           String?
+
+  /// Assets requested. Separate from Booking.assets because pre-approval
+  /// assets may be reserved for the request without being booking-locked.
+  assets Asset[] @relation("BookingRequestAssets")
+
+  /// Pre-approval kit references. On approval, the underlying assets of each
+  /// kit are added to the resulting Booking.
+  kits Kit[] @relation("BookingRequestKits")
+
+  /// The Booking created when this request transitioned to APPROVED. Null
+  /// while pre-approval; set in the same Prisma transaction as the status
+  /// change to APPROVED.
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  bookingId String?  @unique
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  /// CUSTOMER-role users filter by carbonCustomerId; Fieldkit staff query
+  /// by status (queue of PENDING_FIELDKIT).
+  @@index([carbonCustomerId, status])
+  @@index([organizationId, status])
+  @@index([requesterId])
+  @@index([internalApproverId])
+  @@index([fieldkitApproverId])
+}
+
+/**
+ * Lifecycle states for a {@link BookingRequest}. Terminal states are
+ * APPROVED, REJECTED, CANCELLED. All others are transitional.
+ */
+enum BookingRequestStatus {
+  /// Requester is composing. Not yet visible to approvers.
+  DRAFT
+  /// Submitted; waiting for internal customer-side approval. Only used when
+  /// `CustomerSetting.requiresInternalApproval = true`.
+  PENDING_INTERNAL
+  /// Either internal-approved or direct-submit; waiting for Fieldkit staff.
+  PENDING_FIELDKIT
+  /// Fieldkit staff approved; Booking row created and linked via `bookingId`.
+  APPROVED
+  /// Rejected at either approval stage. `rejectionReason` set.
+  REJECTED
+  /// Withdrawn by the requester before any approval was recorded.
+  CANCELLED
 }
 
 /**

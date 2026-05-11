@@ -30,6 +30,7 @@ import type { CustomerDetail } from "~/modules/customer/service.server";
 import {
   getCustomerDetail,
   updateContactPermissions,
+  upsertCustomerSetting,
 } from "~/modules/customer/service.server";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
@@ -43,13 +44,22 @@ import { requirePermission } from "~/utils/roles.server";
 
 const ParamSchema = z.object({ customerId: z.string() });
 
+const IntentSchema = z.enum(["contact-permission", "customer-setting"]);
+
 const PermissionPatchSchema = z.object({
+  intent: z.literal("contact-permission"),
   contactUserId: z.string(),
   canRequestShipment: z.coerce.boolean().optional(),
   canRequestReturn: z.coerce.boolean().optional(),
   canRentInventory: z.coerce.boolean().optional(),
   canViewBilling: z.coerce.boolean().optional(),
   canManageOtherContacts: z.coerce.boolean().optional(),
+  canApproveBookings: z.coerce.boolean().optional(),
+});
+
+const CustomerSettingPatchSchema = z.object({
+  intent: z.literal("customer-setting"),
+  requiresInternalApproval: z.coerce.boolean().optional(),
 });
 
 export async function loader({ context, request, params }: LoaderFunctionArgs) {
@@ -109,29 +119,58 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
     });
 
     const formData = await request.formData();
-    const payload = parseData(formData, PermissionPatchSchema, {
-      additionalData: { carbonCustomerId },
-    });
+    const { intent } = parseData(
+      formData,
+      z.object({ intent: IntentSchema }),
+      { additionalData: { carbonCustomerId } }
+    );
 
-    await updateContactPermissions({
-      organizationId,
-      carbonCustomerId,
-      contactUserId: payload.contactUserId,
-      patch: {
-        canRequestShipment: payload.canRequestShipment ?? false,
-        canRequestReturn: payload.canRequestReturn ?? false,
-        canRentInventory: payload.canRentInventory ?? false,
-        canViewBilling: payload.canViewBilling ?? false,
-        canManageOtherContacts: payload.canManageOtherContacts ?? false,
-      },
-    });
+    if (intent === "contact-permission") {
+      const payload = parseData(formData, PermissionPatchSchema, {
+        additionalData: { carbonCustomerId },
+      });
 
-    sendNotification({
-      title: "Permissions updated",
-      message: "Contact permissions saved.",
-      icon: { name: "success", variant: "success" },
-      senderId: userId,
-    });
+      await updateContactPermissions({
+        organizationId,
+        carbonCustomerId,
+        contactUserId: payload.contactUserId,
+        patch: {
+          canRequestShipment: payload.canRequestShipment ?? false,
+          canRequestReturn: payload.canRequestReturn ?? false,
+          canRentInventory: payload.canRentInventory ?? false,
+          canViewBilling: payload.canViewBilling ?? false,
+          canManageOtherContacts: payload.canManageOtherContacts ?? false,
+          canApproveBookings: payload.canApproveBookings ?? false,
+        },
+      });
+
+      sendNotification({
+        title: "Permissions updated",
+        message: "Contact permissions saved.",
+        icon: { name: "success", variant: "success" },
+        senderId: userId,
+      });
+    } else {
+      const payload = parseData(formData, CustomerSettingPatchSchema, {
+        additionalData: { carbonCustomerId },
+      });
+
+      await upsertCustomerSetting({
+        organizationId,
+        carbonCustomerId,
+        patch: {
+          requiresInternalApproval:
+            payload.requiresInternalApproval ?? false,
+        },
+      });
+
+      sendNotification({
+        title: "Settings updated",
+        message: "Customer approval settings saved.",
+        icon: { name: "success", variant: "success" },
+        senderId: userId,
+      });
+    }
 
     return { success: true } as const;
   } catch (cause) {
@@ -142,12 +181,56 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 
 export default function CustomerDetailPage() {
   const { customer } = useLoaderData<typeof loader>();
-  const { contacts, assets } = customer;
+  const { contacts, assets, setting } = customer;
+  const requiresInternalApproval = setting?.requiresInternalApproval ?? false;
 
   return (
     <div className="relative">
       <Header />
       <div className="my-4 space-y-6">
+        {/* Customer-level approval flow toggle */}
+        <div className="rounded border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-4 py-3 md:px-6">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Approval settings
+            </h3>
+            <p className="text-xs text-gray-500">
+              Controls how booking requests submitted by this customer's
+              contacts reach Fieldkit.
+            </p>
+          </div>
+          <Form
+            method="post"
+            className="flex flex-col gap-3 p-4 md:flex-row md:items-end md:justify-between md:px-6"
+          >
+            <input type="hidden" name="intent" value="customer-setting" />
+            <div className="flex max-w-lg items-start gap-2 text-sm text-gray-700">
+              <input
+                id="requiresInternalApproval"
+                type="checkbox"
+                name="requiresInternalApproval"
+                value="true"
+                defaultChecked={requiresInternalApproval}
+                className="mt-0.5 rounded border-gray-300"
+              />
+              <label htmlFor="requiresInternalApproval">
+                <span className="font-medium text-gray-900">
+                  Require internal approval before Fieldkit
+                </span>
+                <span className="block text-xs text-gray-500">
+                  When enabled, requests submitted by any contact at this
+                  customer must first be approved by a contact with{" "}
+                  <em>Approve bookings</em> permission below. When disabled,
+                  requests go straight to Fieldkit.
+                </span>
+              </label>
+            </div>
+            <Button type="submit" size="sm" variant="secondary">
+              Save settings
+            </Button>
+          </Form>
+        </div>
+
         <div className="rounded border border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 md:px-6">
             <h3 className="text-sm font-semibold text-gray-900">
@@ -278,6 +361,7 @@ function ContactRow({ contact }: ContactRowProps) {
             method="post"
             className="flex flex-wrap items-center gap-3 text-sm"
           >
+            <input type="hidden" name="intent" value="contact-permission" />
             <input
               type="hidden"
               name="contactUserId"
@@ -307,6 +391,11 @@ function ContactRow({ contact }: ContactRowProps) {
               name="canManageOtherContacts"
               label="Manage contacts"
               checked={perm?.canManageOtherContacts ?? false}
+            />
+            <PermToggle
+              name="canApproveBookings"
+              label="Approve bookings"
+              checked={perm?.canApproveBookings ?? false}
             />
             <Button type="submit" size="sm" variant="secondary">
               Save

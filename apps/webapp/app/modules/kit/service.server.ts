@@ -362,11 +362,23 @@ export async function getPaginatedAndFilterableKits<
   organizationId,
   extraInclude,
   currentBookingId,
+  customerScope,
 }: {
   request: LoaderFunctionArgs["request"];
   organizationId: Organization["id"];
   extraInclude?: T;
   currentBookingId?: Booking["id"];
+  /**
+   * CUSTOMER-role tenancy filter. For non-CUSTOMER roles the caller should
+   * pass `{}` (or the result of `buildCustomerKitScope(perm)`, which returns
+   * `{}` for non-customers). For CUSTOMER users this is a `KitWhereInput`
+   * fragment of shape `{ OR: [{ carbonCustomerId: ... }, { carbonCustomerId: null, rentable: true }] }`
+   * that limits results to the customer's own kits + Fieldkit's rentable pool.
+   *
+   * AND-merged into the query alongside search/status/teamMember filters so
+   * its OR clause does not collide with the search OR clause.
+   */
+  customerScope?: Prisma.KitWhereInput;
 }) {
   function hasAssetsIncluded(
     extraInclude?: Prisma.KitInclude
@@ -493,6 +505,17 @@ export async function getPaginatedAndFilterableKits<
       }
     }
 
+    // Customer-tenancy scope — AND-merged so its OR clause doesn't collide
+    // with the search OR or the booking-conflict AND above.
+    if (customerScope && Object.keys(customerScope).length > 0) {
+      const existingAnd = Array.isArray(where.AND)
+        ? where.AND
+        : where.AND
+          ? [where.AND]
+          : [];
+      where.AND = [...existingAnd, customerScope];
+    }
+
     if (
       currentBookingId &&
       hideUnavailable === true &&
@@ -565,10 +588,20 @@ export async function getKit<T extends Prisma.KitInclude | undefined>({
   extraInclude,
   userOrganizations,
   request,
+  customerScope,
 }: Pick<Kit, "id" | "organizationId"> & {
   extraInclude?: T;
   userOrganizations?: Pick<UserOrganization, "organizationId">[];
   request?: Request;
+  /**
+   * CUSTOMER-role tenancy filter. Pass the result of
+   * `buildCustomerKitScope(perm)` from `~/utils/permissions/customer-scope.server`.
+   * Empty for non-CUSTOMER roles. When non-empty, AND-merged into the kit
+   * lookup so a CUSTOMER user receives a 404-style "Kit not found" error if
+   * they try to access another customer's kit (or an internal-only Fieldkit
+   * kit) by ID.
+   */
+  customerScope?: Prisma.KitWhereInput;
 }) {
   try {
     const otherOrganizationIds = userOrganizations?.map(
@@ -581,13 +614,23 @@ export async function getKit<T extends Prisma.KitInclude | undefined>({
       ...extraInclude,
     } as MergeInclude<typeof GET_KIT_STATIC_INCLUDES, T>;
 
+    const hasCustomerScope =
+      customerScope && Object.keys(customerScope).length > 0;
+
     const kit = await db.kit.findFirstOrThrow({
       where: {
-        OR: [
-          { id, organizationId },
-          ...(userOrganizations?.length
-            ? [{ id, organizationId: { in: otherOrganizationIds } }]
-            : []),
+        AND: [
+          {
+            OR: [
+              { id, organizationId },
+              ...(userOrganizations?.length
+                ? [{ id, organizationId: { in: otherOrganizationIds } }]
+                : []),
+            ],
+          },
+          // Customer scope enforced as an additional AND. For non-CUSTOMER
+          // roles this is `{}` which Prisma treats as a no-op.
+          ...(hasCustomerScope ? [customerScope] : []),
         ],
       },
       include: includes,
