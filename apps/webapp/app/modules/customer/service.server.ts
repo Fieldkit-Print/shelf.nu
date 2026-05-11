@@ -128,6 +128,21 @@ export type CustomerDetail = {
     } | null;
   }>;
   assetCount: number;
+  /**
+   * Assets stored on behalf of this customer (capped at 100 to keep the
+   * detail page responsive — pagination can come later if needed).
+   * Sorted newest first.
+   */
+  assets: Array<{
+    id: string;
+    title: string;
+    status: string;
+    sequentialId: string | null;
+    mainImage: string | null;
+    thumbnailImage: string | null;
+    kind: string;
+    availableToBook: boolean;
+  }>;
 };
 
 /**
@@ -177,9 +192,24 @@ export async function getCustomerDetail(args: {
       .map((u) => [u.carbonContactId as string, u])
   );
 
-  const assetCount = await db.asset.count({
-    where: { organizationId, carbonCustomerId },
-  });
+  const [assetCount, assetRows] = await Promise.all([
+    db.asset.count({ where: { organizationId, carbonCustomerId } }),
+    db.asset.findMany({
+      where: { organizationId, carbonCustomerId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        sequentialId: true,
+        mainImage: true,
+        thumbnailImage: true,
+        kind: true,
+        availableToBook: true,
+      },
+    }),
+  ]);
 
   const contacts: CustomerDetail["contacts"] = carbonContacts.map((row) => {
     const user = userByContactId.get(row.contactId);
@@ -198,6 +228,7 @@ export async function getCustomerDetail(args: {
     displayName: carbon.name,
     contacts,
     assetCount,
+    assets: assetRows,
   };
 }
 

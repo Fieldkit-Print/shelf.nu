@@ -16,6 +16,7 @@
 import type { LoaderFunctionArgs, MetaFunction } from "react-router";
 import { data, Link, useLoaderData } from "react-router";
 
+import Header from "~/components/layout/header";
 import type { HeaderData } from "~/components/layout/header/types";
 import { listCustomers } from "~/modules/customer/service.server";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
@@ -84,106 +85,109 @@ export default function CustomersIndex() {
   const totalPages = Math.max(1, Math.ceil(total / perPage));
 
   return (
-    <div className="rounded border border-gray-200 bg-white">
-      <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 md:flex-row md:items-center md:justify-between md:px-6">
-        <form method="get" className="flex items-center gap-3">
-          <input
-            name="search"
-            type="search"
-            placeholder="Search by name"
-            className="rounded border border-gray-200 px-3 py-1.5 text-sm"
-            defaultValue={search}
-          />
-          <button
-            type="submit"
-            className="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white"
-          >
-            Filter
-          </button>
-        </form>
-        <div className="text-xs text-gray-500">
-          {total} customer{total === 1 ? "" : "s"}
-        </div>
-      </div>
-
-      <table className="w-full text-sm">
-        <thead className="border-b border-gray-100 bg-gray-50 text-xs font-medium text-gray-500">
-          <tr>
-            <th className="px-4 py-2 text-left md:px-6">Customer</th>
-            <th className="px-4 py-2 text-right">Contacts</th>
-            <th className="px-4 py-2 text-right">Stored items</th>
-          </tr>
-        </thead>
-        <tbody>
-          {customers.length === 0 ? (
-            <tr>
-              <td
-                colSpan={3}
-                className="px-4 py-6 text-center text-sm text-gray-500"
-              >
-                No customers in Carbon for this company yet.
-              </td>
-            </tr>
-          ) : (
-            customers.map((c) => (
-              <tr
-                key={c.id}
-                className="border-b border-gray-50 hover:bg-gray-50"
-              >
-                <td className="px-4 py-3 md:px-6">
-                  <Link
-                    to={`/customers/${c.id}`}
-                    className="font-medium text-gray-900 hover:underline"
-                  >
-                    {c.displayName}
-                  </Link>
-                  <div className="font-mono text-xs text-gray-500">
-                    Carbon id: {c.id}
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  {c.contactCount}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  {c.assetCount}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      {totalPages > 1 ? (
-        <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 text-sm md:px-6">
-          <span className="text-gray-600">
-            Page {page} of {totalPages}
-          </span>
-          <div className="flex gap-2">
-            {page > 1 ? (
-              <Link
-                className="rounded border border-gray-200 px-3 py-1.5 text-gray-700"
-                to={`?${new URLSearchParams({
-                  search,
-                  page: String(page - 1),
-                }).toString()}`}
-              >
-                Previous
-              </Link>
-            ) : null}
-            {page < totalPages ? (
-              <Link
-                className="rounded border border-gray-200 px-3 py-1.5 text-gray-700"
-                to={`?${new URLSearchParams({
-                  search,
-                  page: String(page + 1),
-                }).toString()}`}
-              >
-                Next
-              </Link>
-            ) : null}
+    <div className="relative">
+      <Header />
+      <div className="my-4 rounded border border-gray-200 bg-white">
+        <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 md:flex-row md:items-center md:justify-between md:px-6">
+          <form method="get" className="flex items-center gap-3">
+            <input
+              name="search"
+              type="search"
+              placeholder="Search by name"
+              className="rounded border border-gray-200 px-3 py-1.5 text-sm"
+              defaultValue={search}
+            />
+            <button
+              type="submit"
+              className="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white"
+            >
+              Filter
+            </button>
+          </form>
+          <div className="text-xs text-gray-500">
+            {total} customer{total === 1 ? "" : "s"}
           </div>
         </div>
-      ) : null}
+
+        <table className="w-full text-sm">
+          <thead className="border-b border-gray-100 bg-gray-50 text-xs font-medium text-gray-500">
+            <tr>
+              <th className="px-4 py-2 text-left md:px-6">Customer</th>
+              <th className="px-4 py-2 text-right">Contacts</th>
+              <th className="px-4 py-2 text-right">Stored items</th>
+            </tr>
+          </thead>
+          <tbody>
+            {customers.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={3}
+                  className="px-4 py-6 text-center text-sm text-gray-500"
+                >
+                  No customers in Carbon for this company yet.
+                </td>
+              </tr>
+            ) : (
+              customers.map((c) => (
+                <tr
+                  key={c.id}
+                  className="border-b border-gray-50 hover:bg-gray-50"
+                >
+                  <td className="px-4 py-3 md:px-6">
+                    <Link
+                      to={`/customers/${c.id}`}
+                      className="font-medium text-gray-900 hover:underline"
+                    >
+                      {c.displayName}
+                    </Link>
+                    <div className="font-mono text-xs text-gray-500">
+                      Carbon id: {c.id}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {c.contactCount}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {c.assetCount}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+
+        {totalPages > 1 ? (
+          <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 text-sm md:px-6">
+            <span className="text-gray-600">
+              Page {page} of {totalPages}
+            </span>
+            <div className="flex gap-2">
+              {page > 1 ? (
+                <Link
+                  className="rounded border border-gray-200 px-3 py-1.5 text-gray-700"
+                  to={`?${new URLSearchParams({
+                    search,
+                    page: String(page - 1),
+                  }).toString()}`}
+                >
+                  Previous
+                </Link>
+              ) : null}
+              {page < totalPages ? (
+                <Link
+                  className="rounded border border-gray-200 px-3 py-1.5 text-gray-700"
+                  to={`?${new URLSearchParams({
+                    search,
+                    page: String(page + 1),
+                  }).toString()}`}
+                >
+                  Next
+                </Link>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

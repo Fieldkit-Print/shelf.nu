@@ -21,6 +21,9 @@ import type {
 import { data, Form, Link, useLoaderData } from "react-router";
 import { z } from "zod";
 
+import { AssetImage } from "~/components/assets/asset-image/component";
+import { AssetStatusBadge } from "~/components/assets/asset-status-badge";
+import Header from "~/components/layout/header";
 import type { HeaderData } from "~/components/layout/header/types";
 import { Button } from "~/components/shared/button";
 import type { CustomerDetail } from "~/modules/customer/service.server";
@@ -139,52 +142,106 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 
 export default function CustomerDetailPage() {
   const { customer } = useLoaderData<typeof loader>();
-  const { contacts } = customer;
+  const { contacts, assets } = customer;
 
   return (
-    <div className="space-y-6">
-      <div className="rounded border border-gray-200 bg-white p-4 md:p-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <span className="text-2xl font-semibold text-gray-900">
-            {customer.displayName}
-          </span>
-          <div className="font-mono text-xs text-gray-500">
-            Carbon id: {customer.id}
+    <div className="relative">
+      <Header />
+      <div className="my-4 space-y-6">
+        <div className="rounded border border-gray-200 bg-white">
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 md:px-6">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Stored assets ({customer.assetCount})
+            </h3>
+            <p className="text-xs text-gray-500">
+              Assets stored at Fieldkit on behalf of this customer.
+            </p>
           </div>
+          {assets.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-gray-500 md:px-6">
+              No assets are currently stored for this customer.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50 text-xs font-medium text-gray-500">
+                <tr>
+                  <th className="px-4 py-2 text-left md:px-6">Asset</th>
+                  <th className="px-4 py-2 text-left">Kind</th>
+                  <th className="px-4 py-2 text-left">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assets.map((a) => (
+                  <tr
+                    key={a.id}
+                    className="border-b border-gray-50 hover:bg-gray-50"
+                  >
+                    <td className="px-4 py-3 md:px-6">
+                      <Link
+                        to={`/assets/${a.id}`}
+                        className="flex items-center gap-3 font-medium text-gray-900 hover:underline"
+                      >
+                        <AssetImage
+                          asset={{
+                            id: a.id,
+                            mainImage: a.mainImage,
+                            thumbnailImage: a.thumbnailImage,
+                            mainImageExpiration: null,
+                          }}
+                          alt={a.title}
+                          className="size-9 rounded border object-cover"
+                        />
+                        <div className="flex flex-col">
+                          <span>{a.title}</span>
+                          {a.sequentialId ? (
+                            <span className="font-mono text-xs text-gray-500">
+                              {a.sequentialId}
+                            </span>
+                          ) : null}
+                        </div>
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">{a.kind}</td>
+                    <td className="px-4 py-3">
+                      <AssetStatusBadge
+                        id={a.id}
+                        status={a.status as never}
+                        availableToBook={a.availableToBook}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {customer.assetCount > assets.length ? (
+            <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-500 md:px-6">
+              Showing first {assets.length} of {customer.assetCount} assets.
+            </p>
+          ) : null}
         </div>
 
-        <dl className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
-          <div>
-            <dt className="text-xs text-gray-500">Contacts</dt>
-            <dd className="text-gray-900">{contacts.length}</dd>
+        <div className="rounded border border-gray-200 bg-white">
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 md:px-6">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Contacts ({contacts.length})
+            </h3>
+            <p className="text-xs text-gray-500">
+              Synced from Carbon. Toggle permissions per contact below.
+            </p>
           </div>
-          <div>
-            <dt className="text-xs text-gray-500">Stored items</dt>
-            <dd className="text-gray-900">{customer.assetCount}</dd>
-          </div>
-        </dl>
-      </div>
-
-      <div className="rounded border border-gray-200 bg-white">
-        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 md:px-6">
-          <h3 className="text-sm font-semibold text-gray-900">
-            Contacts ({contacts.length})
-          </h3>
-          <p className="text-xs text-gray-500">
-            Synced from Carbon. Toggle permissions per contact below.
-          </p>
+          {contacts.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-gray-500 md:px-6">
+              No contacts in Carbon for this customer yet.
+            </p>
+          ) : (
+            <ul>
+              {contacts.map((contact) => (
+                <ContactRow key={contact.carbonContactId} contact={contact} />
+              ))}
+            </ul>
+          )}
         </div>
-        {contacts.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-gray-500 md:px-6">
-            No contacts in Carbon for this customer yet.
-          </p>
-        ) : (
-          <ul>
-            {contacts.map((contact) => (
-              <ContactRow key={contact.carbonContactId} contact={contact} />
-            ))}
-          </ul>
-        )}
       </div>
     </div>
   );
