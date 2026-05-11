@@ -14,8 +14,8 @@ import {
 import { useAssetIndexViewState } from "~/hooks/use-asset-index-view-state";
 import { useCurrentOrganization } from "~/hooks/use-current-organization";
 import { useUserRoleHelper } from "~/hooks/user-user-role-helper";
-import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
-import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator";
+import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import { resolveTeamMemberName } from "~/utils/user";
 import { AdvancedFilteringAndSorting } from "./advanced-asset-index-filters-and-sorting";
 import { ConfigureColumnsDropdown } from "./configure-columns-dropdown";

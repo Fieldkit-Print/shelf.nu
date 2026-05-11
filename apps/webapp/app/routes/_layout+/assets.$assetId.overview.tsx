@@ -65,12 +65,12 @@ import { makeShelfError, ShelfError } from "~/utils/error";
 import { isFormProcessing } from "~/utils/form";
 import { error, getParams, payload, parseData } from "~/utils/http.server";
 import { isLink } from "~/utils/misc";
-import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { userHasPermission } from "~/utils/permissions/permission.validator.client";
+import { userHasPermission } from "~/utils/permissions/permission.validator";
 import { hasPermission } from "~/utils/permissions/permission.validator.server";
 import { useBarcodePermissions } from "~/utils/permissions/use-barcode-permissions";
 import { requirePermission } from "~/utils/roles.server";

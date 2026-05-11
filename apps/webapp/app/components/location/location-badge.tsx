@@ -9,7 +9,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { userHasPermission } from "~/utils/permissions/permission.validator.client";
+import { userHasPermission } from "~/utils/permissions/permission.validator";
 import { tw } from "~/utils/tw";
 import { LocationTree, type LocationTreeNode } from "./location-tree";
 import { Button } from "../shared/button";

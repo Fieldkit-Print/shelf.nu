@@ -50,7 +50,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { userHasPermission } from "~/utils/permissions/permission.validator.client";
+import { userHasPermission } from "~/utils/permissions/permission.validator";
 import { requirePermission } from "~/utils/roles.server";
 
 export type AssetIndexLoaderData = typeof loader;

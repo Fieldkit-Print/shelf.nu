@@ -1,7 +1,7 @@
 import type { Organization } from "@prisma/client";
 import { OrganizationRoles } from "@prisma/client";
 import { PermissionAction, PermissionEntity } from "./permission.data";
-import { userHasPermission } from "./permission.validator.client";
+import { userHasPermission } from "./permission.validator";
 
 /**
  * Type for organization permission settings

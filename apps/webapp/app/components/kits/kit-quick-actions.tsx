@@ -6,7 +6,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { userHasPermission } from "~/utils/permissions/permission.validator.client";
+import { userHasPermission } from "~/utils/permissions/permission.validator";
 import { tw } from "~/utils/tw";
 import DeleteKit from "./delete-kit";
 import { CodePreviewDialog } from "../code-preview/code-preview-dialog";

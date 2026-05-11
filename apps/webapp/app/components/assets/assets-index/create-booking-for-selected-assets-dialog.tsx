@@ -21,7 +21,7 @@ import { useUserRoleHelper } from "~/hooks/user-user-role-helper";
 import { getBookingDefaultStartEndTimes } from "~/modules/working-hours/utils";
 import type { AssetIndexLoaderData } from "~/routes/_layout+/assets._index";
 import { getValidationErrors } from "~/utils/http";
-import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 
 export default function CreateBookingForSelectedAssetsDialog() {
   const { currentOrganization, teamMembers, teamMembersForForm, tagsData } =

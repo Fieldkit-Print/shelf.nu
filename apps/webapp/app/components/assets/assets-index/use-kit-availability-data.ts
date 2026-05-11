@@ -7,8 +7,8 @@ import type { KitIndexLoaderData } from "~/routes/_layout+/kits._index";
 import { getStatusClasses, isOneDayEvent } from "~/utils/calendar";
 import { useHints } from "~/utils/client-hints";
 import { toIsoDateTimeToUserTimezone } from "~/utils/date-fns";
-import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
-import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator";
+import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import { resolveUserDisplayName } from "~/utils/user";
 
 type Items = NonNullable<

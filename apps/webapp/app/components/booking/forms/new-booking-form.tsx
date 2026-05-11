@@ -16,7 +16,7 @@ import type {
 import { useHints } from "~/utils/client-hints";
 
 import { getValidationErrors } from "~/utils/http";
-import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import { tw } from "~/utils/tw";
 import { CustodianField } from "./fields/custodian";
 import { DatesFields } from "./fields/dates";

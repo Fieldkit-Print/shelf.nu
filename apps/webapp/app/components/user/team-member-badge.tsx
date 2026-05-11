@@ -1,8 +1,8 @@
 import { useCurrentOrganization } from "~/hooks/use-current-organization";
 import { useUserData } from "~/hooks/use-user-data";
 import { useUserRoleHelper } from "~/hooks/user-user-role-helper";
-import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
-import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator";
+import { userCanViewSpecificCustody } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import { tw } from "~/utils/tw";
 import { resolveTeamMemberName } from "~/utils/user";
 import { GrayBadge } from "../shared/gray-badge";

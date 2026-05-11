@@ -47,14 +47,14 @@ import {
   parseData,
 } from "~/utils/http.server";
 import { getParamsValues } from "~/utils/list";
-import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
-import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator.client";
+import type { OrganizationPermissionSettings } from "~/utils/permissions/custody-and-bookings-permissions.validator";
+import { userHasCustodyViewPermission } from "~/utils/permissions/custody-and-bookings-permissions.validator";
 import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
 
-import { userHasPermission } from "~/utils/permissions/permission.validator.client";
+import { userHasPermission } from "~/utils/permissions/permission.validator";
 import { requirePermission } from "~/utils/roles.server";
 import { resolveTeamMemberName } from "~/utils/user";
 

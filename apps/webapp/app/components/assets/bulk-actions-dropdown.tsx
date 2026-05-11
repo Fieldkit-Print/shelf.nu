@@ -12,7 +12,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { userHasPermission } from "~/utils/permissions/permission.validator.client";
+import { userHasPermission } from "~/utils/permissions/permission.validator";
 import { tw } from "~/utils/tw";
 import BulkAddToAuditDialog from "./bulk-add-to-audit-dialog";
 import BulkAddToKitDialog from "./bulk-add-to-kit-dialog";
