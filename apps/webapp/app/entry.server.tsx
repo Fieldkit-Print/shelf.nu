@@ -189,16 +189,12 @@ function handleBotRequest(
           pipe(body);
         },
         onShellError(error: unknown) {
+          console.error("[SSR ShellError - bot]", error);
           reject(error);
         },
         onError(error: unknown) {
           responseStatusCode = 500;
-          // Log streaming rendering errors from inside the shell.  Don't log
-          // errors encountered during initial shell rendering since they'll
-          // reject and get logged in handleDocumentRequest.
-          if (shellRendered) {
-            console.error(error);
-          }
+          console.error("[SSR onError - bot]", error);
         },
       }
     );
@@ -235,16 +231,12 @@ function handleBrowserRequest(
           pipe(body);
         },
         onShellError(error: unknown) {
+          console.error("[SSR ShellError]", error);
           reject(error);
         },
         onError(error: unknown) {
           responseStatusCode = 500;
-          // Log streaming rendering errors from inside the shell.  Don't log
-          // errors encountered during initial shell rendering since they'll
-          // reject and get logged in handleDocumentRequest.
-          if (shellRendered) {
-            console.error(error);
-          }
+          console.error("[SSR onError]", error);
         },
       }
     );
