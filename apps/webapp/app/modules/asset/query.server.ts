@@ -41,8 +41,8 @@ export const CUSTOM_FIELD_SEARCH_PATHS = [
  * @returns Prisma.Sql WHERE clause
  */
 export type CustomerOwnershipScope =
-  | { kind: "owned"; customerId: string }
-  | { kind: "ownedOrRentable"; customerId: string };
+  | { kind: "owned"; carbonCustomerId: string }
+  | { kind: "ownedOrRentable"; carbonCustomerId: string };
 
 export function generateWhereClause(
   organizationId: string,
@@ -56,9 +56,9 @@ export function generateWhereClause(
 
   if (customerOwnership) {
     if (customerOwnership.kind === "owned") {
-      whereClause = Prisma.sql`${whereClause} AND a."customerId" = ${customerOwnership.customerId}`;
+      whereClause = Prisma.sql`${whereClause} AND a."carbonCustomerId" = ${customerOwnership.carbonCustomerId}`;
     } else {
-      whereClause = Prisma.sql`${whereClause} AND (a."customerId" = ${customerOwnership.customerId} OR (a."customerId" IS NULL AND a."rentable" = true))`;
+      whereClause = Prisma.sql`${whereClause} AND (a."carbonCustomerId" = ${customerOwnership.carbonCustomerId} OR (a."carbonCustomerId" IS NULL AND a."rentable" = true))`;
     }
   }
 
