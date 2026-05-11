@@ -93,7 +93,7 @@ function NavItemRenderer({
       }
 
       // Special handling for Feedback button
-      if (navItem.title === "Questions/Feedback") {
+      if (navItem.title === "Ask a question") {
         return <FeedbackNavItem />;
       }
 

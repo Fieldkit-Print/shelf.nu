@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { useMemo } from "react";
 import {
   AlarmClockIcon,
-  BellIcon,
   BoxesIcon,
   CalendarRangeIcon,
   ChartLineIcon,
@@ -13,7 +12,6 @@ import {
   MessageCircleIcon,
   Package,
   PackageOpenIcon,
-  QrCodeIcon,
   ScanBarcodeIcon,
   SettingsIcon,
   TagsIcon,
@@ -66,7 +64,7 @@ export type NavItem =
   | ButtonNavItem;
 
 export function useSidebarNavItems() {
-  const { isAdmin, canUseBookings, subscription, unreadUpdatesCount } =
+  const { isAdmin, canUseBookings, subscription } =
     useLoaderData<typeof loader>();
   const { isCustomer, isRestrictedRole } = useUserRoleHelper();
   const currentOrganization = useCurrentOrganization();
@@ -247,32 +245,13 @@ export function useSidebarNavItems() {
   const bottomMenuItems: NavItem[] = [
     {
       type: "child",
-      title: "Asset labels",
-      to: `https://store.shelf.nu/?ref=shelf_webapp_sidebar`,
-      Icon: QrCodeIcon,
-      target: "_blank",
-    },
-    {
-      type: "child",
       title: "QR Scanner",
       to: "/scanner",
       Icon: ScanBarcodeIcon,
     },
     {
       type: "button",
-      title: "Updates",
-      Icon: BellIcon,
-      badge: {
-        show: (unreadUpdatesCount || 0) > 0,
-        variant: "unread" as const,
-      },
-      onClick: () => {
-        // This will be handled by the sidebar component with popover
-      },
-    },
-    {
-      type: "button",
-      title: "Questions/Feedback",
+      title: "Ask a question",
       Icon: MessageCircleIcon,
       onClick: () => {
         // Handled by FeedbackNavItem in sidebar-nav.tsx
