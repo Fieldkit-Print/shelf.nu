@@ -48,11 +48,11 @@ export const meta: MetaFunction<typeof loader> = ({ data }) => [
 export const shouldRevalidate = () => false;
 
 export default function AccountDetailsPage() {
-  // Fieldkit: Subscription tab removed — no Stripe billing in this deployment.
-  const items = [
-    { to: "general", content: "General" },
-    { to: "workspace", content: "Workspaces" },
-  ];
+  // Fieldkit: Subscription + Workspaces tabs removed — no Stripe billing,
+  // single-tenant deployment. The workspace edit routes are still reachable
+  // directly (e.g. via /account-details/workspace/$workspaceId/edit) so
+  // admins can still update the Fieldkit org's name, image, email footer.
+  const items = [{ to: "general", content: "General" }];
 
   return (
     <>
