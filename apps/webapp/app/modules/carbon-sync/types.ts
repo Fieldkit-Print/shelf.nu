@@ -98,7 +98,6 @@ export type CarbonItem = {
   unitOfMeasureCode: string | null;
   thumbnailUrl: string | null;
   active: boolean;
-  blocked: boolean;
   visibleInShelf: boolean;
   companyId: string;
   createdAt: string;

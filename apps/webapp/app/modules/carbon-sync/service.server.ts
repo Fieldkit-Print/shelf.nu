@@ -325,7 +325,6 @@ export async function upsertUserFromContact(args: {
  */
 function shelfAssetKindFor(item: CarbonItem): "INSTANCE" | "CONSUMABLE" | null {
   if (!item.active) return null;
-  if (item.blocked) return null;
   // Serial items ALWAYS sync — they're unique physical things and there's no
   // reason to hide one from Shelf. The `visibleInShelf` column exists on the
   // table but is ignored here for Serial.
