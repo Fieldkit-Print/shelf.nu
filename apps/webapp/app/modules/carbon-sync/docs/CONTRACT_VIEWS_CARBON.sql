@@ -84,8 +84,11 @@ GRANT SELECT ON public_api.v1_customer_contacts TO shelf_fdw_reader;
 -- -----------------------------------------------------------------------------
 -- v1_parts
 --
--- Item master subset for Shelf. Only rows with `visibleInShelf = true`
--- are exposed (Shelf doesn't see hidden items).
+-- Item master subset for Shelf. Returns ALL items — Shelf gates by
+-- (active, itemTrackingType, visibleInShelf) on its side so that
+-- serial-tracked items can also be evaluated even when visibleInShelf is
+-- false (Shelf treats Serial items as always-syncable per the project
+-- architecture).
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW public_api.v1_parts AS
   SELECT
@@ -99,7 +102,6 @@ CREATE OR REPLACE VIEW public_api.v1_parts AS
     i."unitOfMeasureCode"   AS unit_of_measure,
     i."thumbnailUrl"        AS thumbnail_url,
     i.active,
-    i.blocked,
     i."visibleInShelf"      AS visible_in_shelf,
     ic."standardCost"       AS standard_cost,
     iusp."unitSalePrice"    AS unit_sale_price,
@@ -109,8 +111,7 @@ CREATE OR REPLACE VIEW public_api.v1_parts AS
   LEFT JOIN public."itemCost" ic
     ON ic."itemId" = i.id
   LEFT JOIN public."itemUnitSalePrice" iusp
-    ON iusp."itemId" = i.id
-  WHERE i."visibleInShelf" = true;
+    ON iusp."itemId" = i.id;
 
 GRANT SELECT ON public_api.v1_parts TO shelf_fdw_reader;
 
@@ -161,6 +162,36 @@ CREATE OR REPLACE VIEW public_api.v1_warehouse_pricing AS
   WHERE false;       -- zero rows until the underlying table lands
 
 GRANT SELECT ON public_api.v1_warehouse_pricing TO shelf_fdw_reader;
+
+-- -----------------------------------------------------------------------------
+-- v1_tracked_entities
+--
+-- One row per physical unit (serial-tracked items) or per batch
+-- (batch-tracked items). Shelf reads this in two places:
+--   1. Webhook handler for `itemLedger` INSERTs joins through
+--      `itemLedger.trackedEntityId` to fetch the serial number string and
+--      mint a Shelf INSTANCE Asset titled "<item.name> #<readableId>".
+--   2. Backfill: select every tracked entity for serial-tracked items in
+--      the Fieldkit company and ensure a Shelf Asset exists.
+--
+-- `attributes` is the JSONB blob where Shelf writes back its own asset
+-- id (key: "Shelf Asset ID") via REST after minting.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW public_api.v1_tracked_entities AS
+  SELECT
+    te.id,
+    te."readableId"         AS readable_id,
+    te.quantity,
+    te.status::text         AS status,
+    te."sourceDocument"     AS source_document,
+    te."sourceDocumentId"   AS source_document_id,
+    te."sourceDocumentReadableId" AS source_document_readable_id,
+    te.attributes,
+    te."companyId"          AS company_id,
+    te."createdAt"          AS created_at
+  FROM public."trackedEntity" te;
+
+GRANT SELECT ON public_api.v1_tracked_entities TO shelf_fdw_reader;
 
 -- -----------------------------------------------------------------------------
 -- Notes

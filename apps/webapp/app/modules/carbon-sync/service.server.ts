@@ -33,9 +33,17 @@ import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 
-import { fetchContactInCustomer } from "./client.server";
+import {
+  fetchContactInCustomer,
+  setTrackedEntityShelfAssetId,
+} from "./client.server";
 import { sendCustomerContactInvite } from "./invite.server";
-import type { CarbonContact, CarbonCustomerContact, CarbonItem } from "./types";
+import type {
+  CarbonContact,
+  CarbonCustomerContact,
+  CarbonItem,
+  CarbonItemLedger,
+} from "./types";
 
 /**
  * Resolves the shelf Organization that hosts customer tenancy. We fail
@@ -341,10 +349,20 @@ function shelfAssetKindFor(item: CarbonItem): "INSTANCE" | "CONSUMABLE" | null {
 }
 
 /**
- * Handles `item` INSERT/UPDATE webhook events. Provisions or refreshes one
- * Shelf Asset when the item qualifies (see {@link shelfAssetKindFor}). If
- * the item was previously visible but no longer qualifies, archives any
- * existing Asset rows for that carbonPartId.
+ * Handles `item` INSERT/UPDATE webhook events.
+ *
+ * Behaviour split by tracking type:
+ *   - **CONSUMABLE** (Inventory / Batch with `visibleInShelf=true`):
+ *     upserts exactly one Shelf Asset per item, keyed on `carbonPartId`.
+ *   - **INSTANCE** (Serial): does NOT mint new Assets here. INSTANCE
+ *     Assets are minted from `itemLedger` receipts via
+ *     {@link upsertAssetFromItemLedger}. This handler instead refreshes
+ *     shared display fields (title, description, thumbnail) on every
+ *     existing Shelf Asset linked to this item, so a name change in
+ *     Carbon propagates to all units immediately.
+ *
+ * If the item no longer qualifies (deactivated, visibleInShelf flipped
+ * off, etc.), all linked Assets are flipped to `availableToBook=false`.
  *
  * Idempotent: safe to call repeatedly with the same payload.
  */
@@ -353,24 +371,39 @@ export async function upsertItemForShelf(item: CarbonItem) {
   const kind = shelfAssetKindFor(item);
 
   if (!kind) {
-    // Either visibility was turned off, the item was deactivated, blocked,
-    // or it's Non-Inventory. Archive any existing Asset row that points
-    // at this carbonPartId so it stops appearing in booking forms.
+    // Either visibility was turned off, the item was deactivated, or it's
+    // Non-Inventory. Archive every Asset row that points at this
+    // carbonPartId so they stop appearing in booking forms — applies to
+    // both INSTANCE serial units and CONSUMABLE rows.
     await db.asset.updateMany({
-      where: {
-        organizationId,
-        carbonPartId: item.id,
-      },
-      data: {
-        availableToBook: false,
-      },
+      where: { organizationId, carbonPartId: item.id },
+      data: { availableToBook: false },
     });
     return null;
   }
 
-  // We need a User to attribute the row to. Use the org owner so the
-  // resulting Asset.userId is always valid even when no human is logged in
-  // during the webhook delivery.
+  // INSTANCE path: refresh shared fields on every linked Asset (one per
+  // serial unit). No new Asset is created here — that's the itemLedger
+  // handler's job, since "this physical unit exists" depends on a
+  // receipt event, not on the item master row.
+  if (kind === "INSTANCE") {
+    const updated = await db.asset.updateMany({
+      where: { organizationId, carbonPartId: item.id },
+      data: {
+        description: item.description ?? null,
+        thumbnailImage: item.thumbnailUrl ?? null,
+        availableToBook: true,
+        kind,
+      },
+    });
+    Logger.dev("[Carbon Sync] Refreshed INSTANCE assets for item", {
+      carbonPartId: item.id,
+      assetsRefreshed: updated.count,
+    });
+    return null;
+  }
+
+  // CONSUMABLE path: one Asset per item, keyed on carbonPartId.
   const owner = await db.organization.findUnique({
     where: { id: organizationId },
     select: { userId: true },
@@ -383,14 +416,15 @@ export async function upsertItemForShelf(item: CarbonItem) {
     });
   }
 
-  // Find existing Shelf Asset for this item (regardless of current kind),
-  // or create a new one.
+  // Find the consumable Asset for this item (regardless of legacy kind
+  // state) or create a new one.
   const existing = await db.asset.findFirst({
     where: {
       organizationId,
       carbonPartId: item.id,
+      carbonTrackedEntityId: null,
     },
-    select: { id: true, kind: true },
+    select: { id: true },
   });
 
   if (existing) {
@@ -401,7 +435,6 @@ export async function upsertItemForShelf(item: CarbonItem) {
         description: item.description ?? undefined,
         thumbnailImage: item.thumbnailUrl ?? undefined,
         availableToBook: true,
-        // Update kind if Carbon's tracking type changed (rare).
         kind,
       },
     });
@@ -422,23 +455,213 @@ export async function upsertItemForShelf(item: CarbonItem) {
     select: { id: true },
   });
 
-  Logger.info("[Carbon Sync] Provisioned Shelf asset", {
+  Logger.info("[Carbon Sync] Provisioned CONSUMABLE Shelf asset", {
     assetId: created.id,
-    kind,
     carbonPartId: item.id,
   });
   return created.id;
 }
 
 /**
- * Handles `item` DELETE webhook events. Archives any matching CONSUMABLE
- * Assets — never hard-deletes, since historical bookings/audit events
- * reference them.
+ * Handles `item` DELETE webhook events. Archives any matching Asset rows
+ * (both CONSUMABLE and INSTANCE) — never hard-deletes, since historical
+ * bookings/audit events reference them.
  */
 export async function archiveItemFromShelf(carbonPartId: string) {
   const organizationId = getPrimaryOrganizationId();
   await db.asset.updateMany({
-    where: { organizationId, carbonPartId, kind: "CONSUMABLE" },
+    where: { organizationId, carbonPartId },
     data: { availableToBook: false },
   });
+}
+
+// =============================================================================
+// INSTANCE provisioning from itemLedger receipts
+// =============================================================================
+
+/**
+ * Row shape from `carbon_remote.v1_tracked_entities` (FDW). Snake-case
+ * columns reflect the contract view defined in CONTRACT_VIEWS_CARBON.sql.
+ */
+type TrackedEntityFdwRow = {
+  id: string;
+  readable_id: string | null;
+  status: string;
+  attributes: Record<string, unknown> | null;
+  company_id: string;
+};
+
+/**
+ * Row shape from `carbon_remote.v1_parts` (FDW) for the columns Shelf
+ * needs to mint an INSTANCE Asset from a ledger event.
+ */
+type PartFdwRow = {
+  id: string;
+  sku: string | null;
+  name: string;
+  description: string | null;
+  tracking_type: "Serial" | "Batch" | "Inventory" | "Non-Inventory";
+  thumbnail_url: string | null;
+  active: boolean;
+  visible_in_shelf: boolean;
+  standard_cost: number | null;
+};
+
+/**
+ * Provisions (or refreshes) a single Shelf INSTANCE Asset for a Carbon
+ * `trackedEntity` (one physical serial-tracked unit). Triggered from
+ * positive-quantity `itemLedger` INSERT webhooks — the "this serial just
+ * landed in inventory" signal.
+ *
+ * The Asset is keyed on `carbonTrackedEntityId` (one Shelf Asset per
+ * physical Carbon unit) and decorated with:
+ *   - `title`           — `<item.name> #<serialNumber>`
+ *   - `description`     — copied from item
+ *   - `thumbnailImage`  — copied from item
+ *   - `carbonPartId`    — link to the parent SKU
+ *   - `valuation`       — Carbon's `itemCost.standardCost` (Phase 2)
+ *
+ * On creation, fire-and-forgets a callback that writes the new Shelf
+ * sequentialId back into Carbon's `trackedEntity.attributes` so the ID
+ * is discoverable from the Carbon side (Phase 3).
+ *
+ * @returns Created/existing `Asset.id`, or `null` when the item isn't
+ *   Serial-tracked (e.g. the ledger row was for a batch-tracked item) or
+ *   no longer active.
+ */
+export async function upsertAssetFromItemLedger(
+  ledger: CarbonItemLedger
+): Promise<string | null> {
+  const organizationId = getPrimaryOrganizationId();
+  const trackedEntityId = ledger.trackedEntityId;
+  if (!trackedEntityId) return null;
+
+  // FDW reads. Wrapped in arrays because `$queryRaw` returns `unknown`
+  // shaped as a row array — we cast and pick the first match.
+  const [trackedRows, partRows] = await Promise.all([
+    db.$queryRaw<TrackedEntityFdwRow[]>`
+      SELECT id, readable_id, status, attributes, company_id
+      FROM carbon_remote.v1_tracked_entities
+      WHERE id = ${trackedEntityId}
+      LIMIT 1
+    `,
+    db.$queryRaw<PartFdwRow[]>`
+      SELECT id, sku, name, description, tracking_type, thumbnail_url,
+             active, visible_in_shelf, standard_cost
+      FROM carbon_remote.v1_parts
+      WHERE id = ${ledger.itemId}
+      LIMIT 1
+    `,
+  ]);
+
+  const trackedEntity = trackedRows[0];
+  const item = partRows[0];
+
+  if (!trackedEntity) {
+    Logger.warn("[Carbon Sync] itemLedger references unknown trackedEntity", {
+      ledgerId: ledger.id,
+      trackedEntityId,
+    });
+    return null;
+  }
+  if (!item) {
+    Logger.warn("[Carbon Sync] itemLedger references unknown item", {
+      ledgerId: ledger.id,
+      itemId: ledger.itemId,
+    });
+    return null;
+  }
+
+  // Gate: only Serial items mint INSTANCE Assets via this path. Batch /
+  // Inventory items take the item-keyed CONSUMABLE path in
+  // upsertItemForShelf.
+  if (item.tracking_type !== "Serial" || !item.active) {
+    return null;
+  }
+
+  const owner = await db.organization.findUnique({
+    where: { id: organizationId },
+    select: { userId: true },
+  });
+  if (!owner) {
+    throw new ShelfError({
+      cause: null,
+      message: `Primary organization ${organizationId} not found while minting INSTANCE asset.`,
+      label: "Carbon Sync",
+    });
+  }
+
+  const serialDisplay = trackedEntity.readable_id ?? trackedEntity.id;
+  const title = `${item.name} #${serialDisplay}`;
+
+  const existing = await db.asset.findUnique({
+    where: { carbonTrackedEntityId: trackedEntityId },
+    select: { id: true, sequentialId: true },
+  });
+
+  if (existing) {
+    await db.asset.update({
+      where: { id: existing.id },
+      data: {
+        title,
+        description: item.description ?? undefined,
+        thumbnailImage: item.thumbnail_url ?? undefined,
+        valuation: item.standard_cost,
+        kind: "INSTANCE",
+        carbonPartId: item.id,
+        availableToBook: true,
+      },
+    });
+    // Best-effort sync of the Shelf id back to Carbon, in case the
+    // attribute didn't land last time (e.g. earlier Carbon outage).
+    if (existing.sequentialId) {
+      void setTrackedEntityShelfAssetId({
+        carbonTrackedEntityId: trackedEntityId,
+        shelfAssetId: existing.sequentialId,
+        currentAttributes: trackedEntity.attributes,
+      }).catch(() => {
+        // Already logged inside the helper. Don't block the upsert.
+      });
+    }
+    return existing.id;
+  }
+
+  const created = await db.asset.create({
+    data: {
+      organizationId,
+      userId: owner.userId,
+      title,
+      description: item.description,
+      thumbnailImage: item.thumbnail_url,
+      valuation: item.standard_cost,
+      kind: "INSTANCE",
+      carbonPartId: item.id,
+      carbonTrackedEntityId: trackedEntityId,
+      availableToBook: true,
+    },
+    select: { id: true, sequentialId: true },
+  });
+
+  Logger.info("[Carbon Sync] Provisioned INSTANCE Shelf asset from ledger", {
+    assetId: created.id,
+    carbonPartId: item.id,
+    carbonTrackedEntityId: trackedEntityId,
+    ledgerId: ledger.id,
+    serial: serialDisplay,
+  });
+
+  // Phase 3: push Shelf's sequentialId back into Carbon's
+  // trackedEntity.attributes so staff in Carbon can see (and click
+  // through to) the Shelf asset. Best-effort.
+  if (created.sequentialId) {
+    void setTrackedEntityShelfAssetId({
+      carbonTrackedEntityId: trackedEntityId,
+      shelfAssetId: created.sequentialId,
+      currentAttributes: trackedEntity.attributes,
+    }).catch(() => {
+      // Already logged inside the helper. Don't block the upsert.
+    });
+  }
+
+  return created.id;
 }

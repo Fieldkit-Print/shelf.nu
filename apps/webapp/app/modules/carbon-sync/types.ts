@@ -5,22 +5,24 @@
  *
  * The architecture has shifted: Carbon owns customer + item master data and
  * Shelf reads it via Postgres FDW (`carbon_remote.v1_*`). Webhook events here
- * are limited to:
+ * cover:
  *
  * 1. **`contact` UPDATE** — refresh the Shelf User row (email/name change).
  * 2. **`customerContact` INSERT/UPDATE/DELETE** — provision / unlink the
  *    Shelf User that mirrors a Carbon contact (auth identity).
- * 3. **`item` INSERT/UPDATE/DELETE** — when Carbon flips `visibleInShelf` on
- *    a Consumable item, Shelf upserts/archives a CONSUMABLE Asset record.
+ * 3. **`item` INSERT/UPDATE/DELETE** — for CONSUMABLE items, upsert/archive
+ *    one Shelf Asset per item. For INSTANCE (serial-tracked) items the
+ *    handler only refreshes shared display fields on existing Shelf
+ *    Assets — it does not mint new ones (see `itemLedger` below).
+ * 4. **`itemLedger` INSERT** — for serial-tracked items, the first
+ *    positive-quantity ledger row that references a tracked entity is
+ *    the "this physical unit exists in inventory now" signal. Shelf
+ *    mints one INSTANCE Asset per tracked entity at that point.
  *
  * `customer` events are still received (Carbon's webhook UI subscribes to
  * the `customer` table) but Shelf no longer mirrors them — the handler
  * acks with a debug log. Customer master fields are read via the
  * `carbon_remote.v1_customers` foreign view at query time.
- *
- * Carbon's `serialNumber` table is being retired; INSTANCE Asset
- * provisioning will move to a Carbon-calls-Shelf API endpoint
- * (`/api/internal/carbon/asset`) when the warehouse intake flow ships.
  *
  * @see {@link file://./service.server.ts}    Upsert dispatch
  * @see {@link file://./client.server.ts}     Carbon REST client
@@ -105,6 +107,64 @@ export type CarbonItem = {
 };
 
 /**
+ * Carbon's `trackedEntity` row — one physical unit (serial) or one batch
+ * (batch-tracked) of a given item. Created by receipt / job-output flows
+ * in Carbon. Has no direct `itemId` column; the link to the item is
+ * derived via the `itemLedger.trackedEntityId` join (see {@link CarbonItemLedger}).
+ *
+ * `readableId` is the human-facing serial / batch number (operator-entered
+ * in Carbon today).
+ */
+export type CarbonTrackedEntity = {
+  id: string;
+  readableId: string | null;
+  quantity: number;
+  status: string;
+  sourceDocument: string;
+  sourceDocumentId: string;
+  sourceDocumentReadableId: string | null;
+  attributes: Record<string, unknown>;
+  companyId: string;
+  createdAt: string;
+};
+
+/**
+ * Carbon's `itemLedger` row — inventory movement (receipt, sale, transfer,
+ * adjustment, etc.). For serial-tracked items, every movement carries the
+ * `trackedEntityId` of the affected physical unit.
+ *
+ * Shelf uses positive-quantity ledger inserts with a non-null
+ * `trackedEntityId` as the "this serial just landed in inventory" signal
+ * to mint a Shelf INSTANCE Asset.
+ */
+export type CarbonItemLedger = {
+  id: string;
+  entryNumber: number;
+  postingDate: string;
+  entryType:
+    | "Purchase"
+    | "Sale"
+    | "Positive Adjmt."
+    | "Negative Adjmt."
+    | "Transfer"
+    | "Consumption"
+    | "Output"
+    | "Assembly Consumption"
+    | "Assembly Output";
+  documentType: string | null;
+  documentId: string | null;
+  externalDocumentId: string | null;
+  itemId: string;
+  itemReadableId: string | null;
+  locationId: string | null;
+  shelfId: string | null;
+  trackedEntityId: string | null;
+  quantity: number;
+  companyId: string;
+  createdAt: string;
+};
+
+/**
  * Discriminated union of Carbon webhook payloads (relayed shape from
  * Carbon's `supabase/functions/webhook/index.ts`):
  *
@@ -137,6 +197,20 @@ export type CarbonWebhookPayload =
       table: "item";
       record: CarbonItem;
       old?: CarbonItem;
+      companyId: string;
+    }
+  | {
+      type: "INSERT" | "UPDATE" | "DELETE";
+      table: "itemLedger";
+      record: CarbonItemLedger;
+      old?: CarbonItemLedger;
+      companyId: string;
+    }
+  | {
+      type: "INSERT" | "UPDATE" | "DELETE";
+      table: "trackedEntity";
+      record: CarbonTrackedEntity;
+      old?: CarbonTrackedEntity;
       companyId: string;
     };
 

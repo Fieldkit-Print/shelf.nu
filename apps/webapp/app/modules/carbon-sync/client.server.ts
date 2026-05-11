@@ -36,6 +36,7 @@ import {
   FIELDKIT_CARBON_COMPANY_ID,
 } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
+import { Logger } from "~/utils/logger";
 
 import type { CarbonContact } from "./types";
 
@@ -238,5 +239,92 @@ export async function* iterateCustomerContactsWithContact(opts: {
         contact: row.contact,
       };
     }
+  }
+}
+
+// =============================================================================
+// Writes (Shelf → Carbon)
+// =============================================================================
+
+/**
+ * Performs an authenticated PATCH against Carbon's REST API with a JSON
+ * body. Same auth/error semantics as `carbonGet`.
+ */
+async function carbonPatch<T>(path: string, body: unknown): Promise<T> {
+  const { baseUrl, apiKey } = requireCarbonConfig();
+  const url = `${baseUrl}${path}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      "carbon-key": apiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    throw new ShelfError({
+      cause: null,
+      message: `Carbon API PATCH ${path} failed: ${res.status} ${res.statusText}`,
+      additionalData: { path, status: res.status },
+      label: "Carbon Sync",
+    });
+  }
+
+  const responseBody = (await res.json().catch(() => ({}))) as {
+    data?: T;
+    error?: { message: string } | null;
+  };
+
+  if (responseBody?.error) {
+    throw new ShelfError({
+      cause: null,
+      message: `Carbon API PATCH ${path}: ${responseBody.error.message}`,
+      additionalData: { path },
+      label: "Carbon Sync",
+    });
+  }
+
+  return (responseBody.data ?? ({} as T)) as T;
+}
+
+/**
+ * Pushes Shelf's `Asset.sequentialId` back into the corresponding Carbon
+ * `trackedEntity.attributes` JSONB under the `"Shelf Asset ID"` key. This
+ * is the Phase-3 backlink so staff in Carbon can see (and click through
+ * to) the Shelf asset for any tracked unit.
+ *
+ * Best-effort: callers should `void`-await this and never let a failure
+ * block the primary Shelf mint. We log on failure but don't throw.
+ *
+ * @param currentAttributes The attributes JSONB pulled from the FDW
+ *   (or `null` if unavailable). We merge into it so we don't clobber
+ *   other keys Carbon set (e.g. "Receipt Line Index").
+ */
+export async function setTrackedEntityShelfAssetId(args: {
+  carbonTrackedEntityId: string;
+  shelfAssetId: string;
+  currentAttributes: Record<string, unknown> | null;
+}): Promise<void> {
+  const { carbonTrackedEntityId, shelfAssetId, currentAttributes } = args;
+  const mergedAttributes: Record<string, unknown> = {
+    ...(currentAttributes ?? {}),
+    "Shelf Asset ID": shelfAssetId,
+  };
+
+  try {
+    await carbonPatch(
+      `/api/inventory/tracked-entities/${encodeURIComponent(
+        carbonTrackedEntityId
+      )}`,
+      { attributes: mergedAttributes }
+    );
+  } catch (cause) {
+    Logger.warn("[Carbon Sync] Failed to push Shelf id to trackedEntity", {
+      carbonTrackedEntityId,
+      shelfAssetId,
+      cause: (cause as Error)?.message,
+    });
   }
 }
