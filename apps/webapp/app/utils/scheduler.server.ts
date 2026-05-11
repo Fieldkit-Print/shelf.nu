@@ -28,7 +28,10 @@ export const init = async () => {
     const commonAttributes = {
       connectionString: url,
       newJobCheckIntervalSeconds: 60 * 5,
-      noScheduling: true, //need to remove it, if we use cron schedulers in the future, but it comes with a cost of 2 additional polling every minute
+      // pg-boss scheduling enabled for Fieldkit billing crons (storage
+      // billing + Carbon push drain). Cost: ~2 extra DB polls per minute.
+      // See ~/modules/billing/queue.server.ts for the schedule entries.
+      noScheduling: false,
     };
 
     if (NODE_ENV === "production") {

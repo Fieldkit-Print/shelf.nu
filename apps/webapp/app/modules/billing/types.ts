@@ -58,6 +58,14 @@ export type BillingPushJob =
       /** Push one specific event by id. Used for synchronous critical paths. */
       kind: "push-one";
       billableEventId: string;
+    }
+  | {
+      /** Run the daily storage-billing pass.
+       *
+       *  Scheduled by pg-boss cron at ~03:00 UTC. Emits STORAGE
+       *  BillableEvent rows for the previous day. Safe to retry: storage
+       *  events are keyed on (asset, day) for idempotency. */
+      kind: "run-storage-billing";
     };
 
 /**
