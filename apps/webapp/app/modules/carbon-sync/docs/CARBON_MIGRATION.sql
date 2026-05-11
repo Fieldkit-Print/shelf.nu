@@ -224,6 +224,7 @@ RETURNS TABLE (
     "name" TEXT,
     "replenishmentSystem" "itemReplenishmentSystem",
     "unitOfMeasureCode" TEXT,
+    "visibleInShelf" BOOLEAN,
     "notes" JSONB,
     "thumbnailPath" TEXT,
     "modelId" TEXT,
@@ -277,6 +278,7 @@ BEGIN
     i."name",
     i."replenishmentSystem",
     i."unitOfMeasureCode",
+    i."visibleInShelf",
     i."notes",
     CASE
       WHEN i."thumbnailPath" IS NULL AND mu."thumbnailPath" IS NOT NULL THEN mu."thumbnailPath"
