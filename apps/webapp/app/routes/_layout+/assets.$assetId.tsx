@@ -1,4 +1,12 @@
+import { useState } from "react";
 import { BarcodeType } from "@prisma/client";
+import {
+  Popover,
+  PopoverContent,
+  PopoverPortal,
+  PopoverTrigger,
+} from "@radix-ui/react-popover";
+import { ChevronsUpDown, Check } from "lucide-react";
 import { DateTime } from "luxon";
 import type {
   ActionFunctionArgs,
@@ -18,6 +26,14 @@ import Header from "~/components/layout/header";
 import type { HeaderData } from "~/components/layout/header/types";
 import HorizontalTabs from "~/components/layout/horizontal-tabs";
 import { Button } from "~/components/shared/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "~/components/shared/command";
 import When from "~/components/when/when";
 import { useUserRoleHelper } from "~/hooks/user-user-role-helper";
 import {
@@ -430,10 +446,25 @@ function CustomerAssignmentCard({
   currentCarbonCustomerId: string | null;
   carbonCustomers: { id: string; name: string }[];
 }) {
-  const currentCustomerName = currentCarbonCustomerId
-    ? carbonCustomers.find((c) => c.id === currentCarbonCustomerId)?.name ??
-      null
+  const [open, setOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState<string>(
+    currentCarbonCustomerId ?? ""
+  );
+
+  const selectedCustomer = selectedId
+    ? carbonCustomers.find((c) => c.id === selectedId)
     : null;
+  const triggerLabel = selectedCustomer
+    ? selectedCustomer.name
+    : selectedId
+    ? `(unknown customer — id ${selectedId})`
+    : "— Not assigned (Fieldkit-owned) —";
+
+  const currentCustomer = currentCarbonCustomerId
+    ? carbonCustomers.find((c) => c.id === currentCarbonCustomerId)
+    : null;
+  const hasChanges = selectedId !== (currentCarbonCustomerId ?? "");
+
   return (
     <div className="my-4 rounded border border-gray-200 bg-white p-4 md:p-6">
       <div className="mb-3 flex items-center justify-between">
@@ -444,7 +475,7 @@ function CustomerAssignmentCard({
           <p className="text-xs text-gray-500">
             {currentCarbonCustomerId
               ? `Currently assigned to ${
-                  currentCustomerName ??
+                  currentCustomer?.name ??
                   "(unknown customer — id " + currentCarbonCustomerId + ")"
                 }.`
               : "Not assigned — this asset is currently Fieldkit-owned inventory."}
@@ -458,19 +489,87 @@ function CustomerAssignmentCard({
       >
         <input type="hidden" name="intent" value="assign-customer" />
         <input type="hidden" name="assetIds" value={assetId} />
-        <select
-          name="carbonCustomerId"
-          defaultValue={currentCarbonCustomerId ?? ""}
-          className="min-w-[260px] rounded border border-gray-200 px-3 py-1.5 text-sm"
+        <input type="hidden" name="carbonCustomerId" value={selectedId} />
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-expanded={open}
+              className="flex min-w-[260px] items-center justify-between gap-2 rounded border border-gray-200 px-3 py-1.5 text-left text-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            >
+              <span className="truncate text-gray-900">{triggerLabel}</span>
+              <ChevronsUpDown className="size-4 shrink-0 text-gray-400" />
+            </button>
+          </PopoverTrigger>
+          <PopoverPortal>
+            <PopoverContent
+              align="start"
+              sideOffset={4}
+              className="z-50 w-[--radix-popover-trigger-width] min-w-[260px] rounded-md border border-gray-200 bg-white shadow-lg"
+            >
+              <Command>
+                <CommandInput
+                  placeholder="Search customers…"
+                  className="border-b border-gray-100 px-3 py-2 text-sm focus:outline-none"
+                />
+                <CommandList className="max-h-64 overflow-y-auto">
+                  <CommandEmpty className="py-6 text-center text-sm text-gray-500">
+                    No customers found.
+                  </CommandEmpty>
+                  <CommandGroup>
+                    <CommandItem
+                      value="__unassigned__ not assigned fieldkit owned"
+                      onSelect={() => {
+                        setSelectedId("");
+                        setOpen(false);
+                      }}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm aria-selected:bg-gray-50"
+                    >
+                      <Check
+                        className={tw(
+                          "size-4",
+                          selectedId === ""
+                            ? "text-primary-600"
+                            : "text-transparent"
+                        )}
+                      />
+                      <span className="italic text-gray-600">
+                        Not assigned (Fieldkit-owned)
+                      </span>
+                    </CommandItem>
+                    {carbonCustomers.map((c) => (
+                      <CommandItem
+                        key={c.id}
+                        value={c.name}
+                        onSelect={() => {
+                          setSelectedId(c.id);
+                          setOpen(false);
+                        }}
+                        className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm aria-selected:bg-gray-50"
+                      >
+                        <Check
+                          className={tw(
+                            "size-4",
+                            selectedId === c.id
+                              ? "text-primary-600"
+                              : "text-transparent"
+                          )}
+                        />
+                        <span className="truncate text-gray-900">{c.name}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </PopoverPortal>
+        </Popover>
+        <Button
+          type="submit"
+          size="sm"
+          variant="secondary"
+          disabled={!hasChanges}
         >
-          <option value="">— Not assigned (Fieldkit-owned) —</option>
-          {carbonCustomers.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        <Button type="submit" size="sm" variant="secondary">
           Save
         </Button>
       </Form>

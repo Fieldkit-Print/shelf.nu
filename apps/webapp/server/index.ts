@@ -173,6 +173,7 @@ export default createHonoServer<ServerEnv>({
           "/api/public-stats",
           "/api/oss-friends",
           "/api/stripe-webhook",
+          "/api/webhooks/carbon",
           "/qr",
           "/qr/:qrId",
           "/qr/:qrId/not-logged-in",
