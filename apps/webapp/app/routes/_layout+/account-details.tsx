@@ -1,9 +1,8 @@
 import type { LoaderFunctionArgs, MetaFunction } from "react-router";
-import { data, Link, Outlet, useRouteLoaderData } from "react-router";
+import { data, Link, Outlet } from "react-router";
 import { ErrorContent } from "~/components/errors";
 import Header from "~/components/layout/header";
 import HorizontalTabs from "~/components/layout/horizontal-tabs";
-import type { loader as layoutLoader } from "~/routes/_layout+/_layout";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { makeShelfError } from "~/utils/error";
 import { payload, error } from "~/utils/http.server";
@@ -49,18 +48,11 @@ export const meta: MetaFunction<typeof loader> = ({ data }) => [
 export const shouldRevalidate = () => false;
 
 export default function AccountDetailsPage() {
+  // Fieldkit: Subscription tab removed — no Stripe billing in this deployment.
   const items = [
     { to: "general", content: "General" },
     { to: "workspace", content: "Workspaces" },
   ];
-
-  const enablePremium = useRouteLoaderData<typeof layoutLoader>(
-    "routes/_layout+/_layout"
-  )?.enablePremium;
-
-  if (enablePremium) {
-    items.push({ to: "subscription", content: "Subscription" });
-  }
 
   return (
     <>
