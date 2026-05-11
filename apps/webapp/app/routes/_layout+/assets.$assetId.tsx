@@ -6,7 +6,7 @@ import {
   PopoverPortal,
   PopoverTrigger,
 } from "@radix-ui/react-popover";
-import { ChevronsUpDown, Check } from "lucide-react";
+import { ChevronsUpDown, Check, ExternalLink } from "lucide-react";
 import { DateTime } from "luxon";
 import type {
   ActionFunctionArgs,
@@ -56,6 +56,7 @@ import { checkExhaustiveSwitch } from "~/utils/check-exhaustive-switch";
 import { getHints } from "~/utils/client-hints";
 import { DATE_TIME_FORMAT } from "~/utils/constants";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
+import { CARBON_ERP_BASE_URL } from "~/utils/env";
 import { makeShelfError } from "~/utils/error";
 import {
   error,
@@ -133,10 +134,18 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       }
     }
 
+    // Staff-only deep link to the same item in Carbon ERP, when configured.
+    // Customer-role users don't need (or get to see) Carbon admin URLs.
+    const carbonErpItemUrl =
+      !perm.isCustomer && CARBON_ERP_BASE_URL && asset.carbonPartId
+        ? `${CARBON_ERP_BASE_URL}/x/part/${asset.carbonPartId}`
+        : null;
+
     return payload({
       asset,
       header,
       carbonCustomers,
+      carbonErpItemUrl,
     });
   } catch (cause) {
     const reason = makeShelfError(cause);
@@ -351,7 +360,8 @@ export const links: LinksFunction = () => [
 ];
 
 export default function AssetDetailsPage() {
-  const { asset, carbonCustomers } = useLoaderData<typeof loader>();
+  const { asset, carbonCustomers, carbonErpItemUrl } =
+    useLoaderData<typeof loader>();
 
   const { roles, isCustomer } = useUserRoleHelper();
   const canAssignCustomer = userHasPermission({
@@ -414,6 +424,20 @@ export default function AssetDetailsPage() {
           <ActionsDropdown />
         </When>
         <BookingActionsDropdown />
+        {carbonErpItemUrl ? (
+          <Button
+            to={carbonErpItemUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            variant="secondary"
+            size="sm"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              Open in Carbon
+              <ExternalLink className="size-3.5" />
+            </span>
+          </Button>
+        ) : null}
       </Header>
       <HorizontalTabs items={items} />
       {canAssignCustomer && !isCustomer ? (

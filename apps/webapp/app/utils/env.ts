@@ -76,6 +76,7 @@ declare global {
       // so payloads from other Carbon tenants are rejected.
       CARBON_API_BASE_URL: string;
       CARBON_API_KEY: string;
+      CARBON_ERP_BASE_URL: string;
       CARBON_WEBHOOK_SECRET: string;
       FIELDKIT_CARBON_COMPANY_ID: string;
       // Single shelf organization that hosts customer tenancy. The carbon-sync
@@ -215,6 +216,15 @@ export const DIRECT_URL = getEnv("DIRECT_URL", {
  * when called without them so misconfigured deploys are loud.
  */
 export const CARBON_API_BASE_URL = getEnv("CARBON_API_BASE_URL", {
+  isRequired: false,
+})?.replace(/\/+$/, "");
+/**
+ * User-facing Carbon ERP URL (the React app, distinct from the REST API).
+ * Used to render staff-only "Open in Carbon" deep links on Shelf detail
+ * pages — eg. `${CARBON_ERP_BASE_URL}/x/part/${carbonPartId}`. Optional;
+ * the button just doesn't render when this is unset.
+ */
+export const CARBON_ERP_BASE_URL = getEnv("CARBON_ERP_BASE_URL", {
   isRequired: false,
 })?.replace(/\/+$/, "");
 export const CARBON_API_KEY = getEnv("CARBON_API_KEY", {

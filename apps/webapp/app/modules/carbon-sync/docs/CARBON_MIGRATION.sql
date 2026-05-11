@@ -320,6 +320,125 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =============================================================================
+-- 5) get_consumable_details — expose visibleInShelf
+--
+-- Same rationale as get_part_details above: the Carbon Consumable detail
+-- sidebar reads visibleInShelf from this RPC so the toggle reflects current
+-- state. Run this only if you've also taken the Carbon UI deploy that adds
+-- the toggle to ConsumableProperties (it's tolerant if you don't — the
+-- toggle just always reads as off until the RPC is re-deployed).
+-- =============================================================================
+
+DROP FUNCTION IF EXISTS get_consumable_details(TEXT);
+CREATE OR REPLACE FUNCTION get_consumable_details(item_id TEXT)
+RETURNS TABLE (
+    "active" BOOLEAN,
+    "assignee" TEXT,
+    "defaultMethodType" "methodType",
+    "description" TEXT,
+    "itemTrackingType" "itemTrackingType",
+    "name" TEXT,
+    "replenishmentSystem" "itemReplenishmentSystem",
+    "unitOfMeasureCode" TEXT,
+    "visibleInShelf" BOOLEAN,
+    "notes" JSONB,
+    "thumbnailPath" TEXT,
+    "modelUploadId" TEXT,
+    "modelPath" TEXT,
+    "modelName" TEXT,
+    "modelSize" BIGINT,
+    "id" TEXT,
+    "companyId" TEXT,
+    "readableId" TEXT,
+    "revision" TEXT,
+    "readableIdWithRevision" TEXT,
+    "supplierIds" TEXT,
+    "unitOfMeasure" TEXT,
+    "revisions" JSON,
+    "customFields" JSONB,
+    "tags" TEXT[],
+    "itemPostingGroupId" TEXT,
+    "createdBy" TEXT,
+    "createdAt" TIMESTAMP WITH TIME ZONE,
+    "updatedBy" TEXT,
+    "updatedAt" TIMESTAMP WITH TIME ZONE
+) AS $$
+DECLARE
+  v_readable_id TEXT;
+  v_company_id TEXT;
+BEGIN
+  SELECT i."readableId", i."companyId" INTO v_readable_id, v_company_id
+  FROM "item" i
+  WHERE i.id = item_id;
+
+  RETURN QUERY
+  WITH item_revisions AS (
+    SELECT
+      json_agg(
+        json_build_object(
+          'id', i.id,
+          'revision', i."revision",
+          'methodType', i."defaultMethodType",
+          'type', i."type"
+        ) ORDER BY i."createdAt"
+      ) as "revisions"
+    FROM "item" i
+    WHERE i."readableId" = v_readable_id
+    AND i."companyId" = v_company_id
+  )
+  SELECT
+    i."active",
+    i."assignee",
+    i."defaultMethodType",
+    i."description",
+    i."itemTrackingType",
+    i."name",
+    i."replenishmentSystem",
+    i."unitOfMeasureCode",
+    i."visibleInShelf",
+    i."notes",
+    CASE
+      WHEN i."thumbnailPath" IS NULL AND mu."thumbnailPath" IS NOT NULL THEN mu."thumbnailPath"
+      ELSE i."thumbnailPath"
+    END as "thumbnailPath",
+    mu.id as "modelUploadId",
+    mu."modelPath",
+    mu."name" as "modelName",
+    mu."size" as "modelSize",
+    i."id",
+    i."companyId",
+    i."readableId",
+    i."revision",
+    i."readableIdWithRevision",
+    ps."supplierIds",
+    uom.name as "unitOfMeasure",
+    ir."revisions",
+    c."customFields",
+    c."tags",
+    ic."itemPostingGroupId",
+    i."createdBy",
+    i."createdAt",
+    i."updatedBy",
+    i."updatedAt"
+  FROM "consumable" c
+  LEFT JOIN "item" i ON i."readableId" = c."id" AND i."companyId" = c."companyId"
+  LEFT JOIN item_revisions ir ON true
+  LEFT JOIN (
+    SELECT
+      ps."itemId",
+      string_agg(ps."supplierPartId", ',') AS "supplierIds"
+    FROM "supplierPart" ps
+    GROUP BY ps."itemId"
+  ) ps ON ps."itemId" = i.id
+  LEFT JOIN "modelUpload" mu ON mu.id = i."modelUploadId"
+  LEFT JOIN "unitOfMeasure" uom ON uom.code = i."unitOfMeasureCode" AND uom."companyId" = i."companyId"
+  LEFT JOIN "itemCost" ic ON ic."itemId" = i.id
+  WHERE i."id" = item_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- =============================================================================
 -- Next steps (in Carbon UI, not SQL):
 --
 -- Settings → Webhooks → New webhook (do this three times — once per table):
