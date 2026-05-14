@@ -48,14 +48,13 @@ CREATE OR REPLACE VIEW public_api.v1_customers AS
     c.id,
     c."companyId"               AS company_id,
     c.name                      AS display_name,
-    c."mergedIntoCustomerId"    AS merged_into_customer_id,
-    CASE
-      WHEN c."mergedIntoCustomerId" IS NOT NULL THEN 'ARCHIVED'
-      ELSE 'ACTIVE'
-    END                         AS status,
+    c."customerStatusId"        AS customer_status_id,
+    cs.name                     AS status,
     c."createdAt"               AS created_at,
     c."updatedAt"               AS updated_at
-  FROM public.customer c;
+  FROM public.customer c
+  LEFT JOIN public."customerStatus" cs
+    ON cs.id = c."customerStatusId" AND cs."companyId" = c."companyId";
 
 GRANT SELECT ON public_api.v1_customers TO shelf_fdw_reader;
 
@@ -68,7 +67,7 @@ GRANT SELECT ON public_api.v1_customers TO shelf_fdw_reader;
 CREATE OR REPLACE VIEW public_api.v1_customer_contacts AS
   SELECT
     cc.id            AS link_id,
-    cc."companyId"   AS company_id,
+    ct."companyId"   AS company_id,
     cc."customerId"  AS customer_id,
     cc."contactId"   AS contact_id,
     ct.email,
@@ -100,7 +99,7 @@ CREATE OR REPLACE VIEW public_api.v1_parts AS
     i.type,
     i."itemTrackingType"    AS tracking_type,
     i."unitOfMeasureCode"   AS unit_of_measure,
-    i."thumbnailUrl"        AS thumbnail_url,
+    i."thumbnailPath"       AS thumbnail_url,
     i.active,
     i."visibleInShelf"      AS visible_in_shelf,
     ic."standardCost"       AS standard_cost,
@@ -180,7 +179,6 @@ CREATE OR REPLACE VIEW public_api.v1_item_ledger AS
     il."documentType"::text AS document_type,
     il."documentId"         AS document_id,
     il."itemId"             AS item_id,
-    il."itemReadableId"     AS item_readable_id,
     il."trackedEntityId"    AS tracked_entity_id,
     il."locationId"         AS location_id,
     il.quantity,
