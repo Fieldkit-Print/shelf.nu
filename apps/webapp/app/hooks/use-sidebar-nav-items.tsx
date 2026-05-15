@@ -247,6 +247,10 @@ export function useSidebarNavItems() {
           title: "Custom fields",
           to: "/settings/custom-fields",
         },
+        {
+          title: "Pricing",
+          to: "/settings/pricing",
+        },
       ],
     },
   ];

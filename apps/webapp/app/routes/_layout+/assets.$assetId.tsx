@@ -381,6 +381,15 @@ export default function AssetDetailsPage() {
     })
       ? [{ to: "reminders", content: "Reminders" }]
       : []),
+    // Pricing override gated on asset.update — staff only, CUSTOMER role
+    // never sees this tab.
+    ...(userHasPermission({
+      roles,
+      entity: PermissionEntity.asset,
+      action: PermissionAction.update,
+    })
+      ? [{ to: "pricing", content: "Pricing" }]
+      : []),
   ];
 
   return (

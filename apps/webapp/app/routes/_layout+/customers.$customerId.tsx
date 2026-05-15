@@ -23,6 +23,7 @@ import { z } from "zod";
 
 import { AssetImage } from "~/components/assets/asset-image/component";
 import { AssetStatusBadge } from "~/components/assets/asset-status-badge";
+import Input from "~/components/forms/input";
 import Header from "~/components/layout/header";
 import type { HeaderData } from "~/components/layout/header/types";
 import { Button } from "~/components/shared/button";
@@ -32,6 +33,12 @@ import {
   updateContactPermissions,
   upsertCustomerSetting,
 } from "~/modules/customer/service.server";
+import {
+  centsToDollars,
+  dollarsToCents,
+  getCustomerPricing,
+  upsertCustomerPricing,
+} from "~/modules/pricing/service.server";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
 import { makeShelfError } from "~/utils/error";
@@ -44,7 +51,11 @@ import { requirePermission } from "~/utils/roles.server";
 
 const ParamSchema = z.object({ customerId: z.string() });
 
-const IntentSchema = z.enum(["contact-permission", "customer-setting"]);
+const IntentSchema = z.enum([
+  "contact-permission",
+  "customer-setting",
+  "customer-pricing",
+]);
 
 const PermissionPatchSchema = z.object({
   intent: z.literal("contact-permission"),
@@ -60,6 +71,27 @@ const PermissionPatchSchema = z.object({
 const CustomerSettingPatchSchema = z.object({
   intent: z.literal("customer-setting"),
   requiresInternalApproval: z.coerce.boolean().optional(),
+});
+
+/**
+ * Customer-pricing patch schema. Dollar inputs and decimal multipliers as
+ * strings; we coerce in the action. Empty string → null (clears the
+ * customer override → fall through to org default).
+ */
+const CustomerPricingPatchSchema = z.object({
+  intent: z.literal("customer-pricing"),
+  storagePerDayDollars: z.string().optional(),
+  pickDollars: z.string().optional(),
+  returnDollars: z.string().optional(),
+  rentalPerDayDollars: z.string().optional(),
+  rentalLossMultiplier: z.string().optional(),
+  consumableMarkupPct: z.string().optional(),
+  currencyCode: z
+    .string()
+    .trim()
+    .max(3)
+    .transform((s) => (s ? s.toUpperCase() : ""))
+    .optional(),
 });
 
 export async function loader({ context, request, params }: LoaderFunctionArgs) {
@@ -78,17 +110,17 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       action: PermissionAction.read,
     });
 
-    const customer = await getCustomerDetail({
-      organizationId,
-      carbonCustomerId,
-    });
+    const [customer, pricing] = await Promise.all([
+      getCustomerDetail({ organizationId, carbonCustomerId }),
+      getCustomerPricing(carbonCustomerId),
+    ]);
 
     const header: HeaderData = {
       title: customer.displayName,
       subHeading: `Carbon id: ${customer.id}`,
     };
 
-    return { header, customer };
+    return { header, customer, pricing };
   } catch (cause) {
     const reason = makeShelfError(cause, { userId, carbonCustomerId });
     throw data(error(reason), { status: reason.status });
@@ -150,7 +182,7 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         icon: { name: "success", variant: "success" },
         senderId: userId,
       });
-    } else {
+    } else if (intent === "customer-setting") {
       const payload = parseData(formData, CustomerSettingPatchSchema, {
         additionalData: { carbonCustomerId },
       });
@@ -170,6 +202,42 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         icon: { name: "success", variant: "success" },
         senderId: userId,
       });
+    } else if (intent === "customer-pricing") {
+      const payload = parseData(formData, CustomerPricingPatchSchema, {
+        additionalData: { carbonCustomerId },
+      });
+
+      // Empty string for a decimal field means "clear the override" (null in DB);
+      // a non-empty parsable number becomes the new value. dollarsToCents
+      // already follows the same convention for cents fields.
+      const decimalOrNull = (v: string | undefined) => {
+        const trimmed = v?.trim();
+        if (!trimmed) return null;
+        const num = Number(trimmed);
+        if (!Number.isFinite(num)) return null;
+        return trimmed;
+      };
+
+      await upsertCustomerPricing({
+        organizationId,
+        carbonCustomerId,
+        patch: {
+          storagePerDayCents: dollarsToCents(payload.storagePerDayDollars),
+          pickCents: dollarsToCents(payload.pickDollars),
+          returnCents: dollarsToCents(payload.returnDollars),
+          rentalPerDayCents: dollarsToCents(payload.rentalPerDayDollars),
+          rentalLossMultiplier: decimalOrNull(payload.rentalLossMultiplier),
+          consumableMarkupPct: decimalOrNull(payload.consumableMarkupPct),
+          currencyCode: payload.currencyCode || null,
+        },
+      });
+
+      sendNotification({
+        title: "Pricing updated",
+        message: "Customer pricing overrides saved.",
+        icon: { name: "success", variant: "success" },
+        senderId: userId,
+      });
     }
 
     return { success: true } as const;
@@ -180,7 +248,7 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 }
 
 export default function CustomerDetailPage() {
-  const { customer } = useLoaderData<typeof loader>();
+  const { customer, pricing } = useLoaderData<typeof loader>();
   const { contacts, assets, setting } = customer;
   const requiresInternalApproval = setting?.requiresInternalApproval ?? false;
 
@@ -228,6 +296,97 @@ export default function CustomerDetailPage() {
             <Button type="submit" size="sm" variant="secondary">
               Save settings
             </Button>
+          </Form>
+        </div>
+
+        {/* Customer-level pricing overrides. Any blank field falls through
+            to the org-default tier; any filled field overrides it. */}
+        <div className="rounded border border-gray-200 bg-white">
+          <div className="border-b border-gray-100 px-4 py-3 md:px-6">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Pricing overrides
+            </h3>
+            <p className="text-xs text-gray-500">
+              Leave a field blank to use the org default from{" "}
+              <Link
+                to="/settings/pricing"
+                className="text-primary-700 hover:underline"
+              >
+                /settings/pricing
+              </Link>
+              . Filled values override the default for this customer only.
+            </p>
+          </div>
+          <Form method="post" className="space-y-4 p-4 md:px-6">
+            <input type="hidden" name="intent" value="customer-pricing" />
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Input
+                label="Storage / day ($)"
+                name="storagePerDayDollars"
+                defaultValue={centsToDollars(pricing?.storagePerDayCents)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Rental / day ($)"
+                name="rentalPerDayDollars"
+                defaultValue={centsToDollars(pricing?.rentalPerDayCents)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Pick ($)"
+                name="pickDollars"
+                defaultValue={centsToDollars(pricing?.pickCents)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Return ($)"
+                name="returnDollars"
+                defaultValue={centsToDollars(pricing?.returnCents)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Rental-loss multiplier"
+                name="rentalLossMultiplier"
+                defaultValue={pricing?.rentalLossMultiplier?.toString() ?? ""}
+                type="number"
+                step="0.0001"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Consumable markup"
+                name="consumableMarkupPct"
+                defaultValue={pricing?.consumableMarkupPct?.toString() ?? ""}
+                type="number"
+                step="0.0001"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Currency code"
+                name="currencyCode"
+                defaultValue={pricing?.currencyCode ?? ""}
+                maxLength={3}
+                placeholder="(use org default)"
+              />
+            </div>
+            <div className="flex justify-end">
+              <Button type="submit" size="sm" variant="secondary">
+                Save pricing
+              </Button>
+            </div>
           </Form>
         </div>
 
