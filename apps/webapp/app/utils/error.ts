@@ -107,7 +107,10 @@ export type FailureReason = {
     // Fieldkit ↔ Carbon ERP integration (carbon-sync module)
     | "Carbon Sync"
     // Fieldkit customer-portal request/approval flow
-    | "BookingRequest";
+    | "BookingRequest"
+    // Fieldkit pricing / billing resolution
+    | "Pricing"
+    | "Billing";
   /**
    * The message intended for the user.
    * You can add new lines using \n which will be parsed into paragraphs in the html

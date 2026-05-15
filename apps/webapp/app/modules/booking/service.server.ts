@@ -100,6 +100,10 @@ import {
   isBookingExpired,
 } from "./utils.server";
 import { recordEvent, recordEvents } from "../activity-event/service.server";
+import {
+  emitPickEvents,
+  emitReturnEvents,
+} from "../billing/event-emission.server";
 import { createSystemBookingNote } from "../booking-note/service.server";
 import { createNotes } from "../note/service.server";
 
@@ -1359,6 +1363,16 @@ export async function checkoutBooking({
           })),
           tx
         );
+
+        // Billing — PICK event per customer-owned asset, inside the tx so it
+        // commits atomically with the status change. Fieldkit-owned assets
+        // (carbonCustomerId IS NULL) are skipped automatically by the emitter.
+        await emitPickEvents({
+          organizationId,
+          bookingId: bookingFound.id,
+          assets: bookingFound.assets,
+          tx,
+        });
       }
     });
 
@@ -1491,6 +1505,13 @@ export async function checkinBooking({
               id: true,
               kitId: true,
               status: true,
+              // Billing emission needs these to pick billable assets and
+              // resolve rates. carbonCustomerId/rentable/kind drive the
+              // filter; valuation feeds RENTAL_LOSS / CONSUMABLE_USE math.
+              kind: true,
+              carbonCustomerId: true,
+              rentable: true,
+              valuation: true,
               bookings: {
                 select: { id: true, status: true },
                 where: {
@@ -1681,6 +1702,15 @@ export async function checkinBooking({
             })),
             tx
           );
+
+          // Billing — RETURN event per customer-owned asset coming back to
+          // storage. Same atomicity guarantee as the activity events above.
+          await emitReturnEvents({
+            organizationId,
+            bookingId: bookingFound.id,
+            assets: bookingFound.assets,
+            tx,
+          });
         }
 
         /** Finally update the booking */

@@ -309,6 +309,11 @@ model Asset {
   /// `bookings` which is the post-approval M2M.
   bookingRequests BookingRequest[] @relation("BookingRequestAssets")
 
+  /// Per-asset pricing override. Most-specific tier in the org → customer →
+  /// asset pricing hierarchy. Only storage + rental rates are settable per
+  /// asset; pick/return/loss/consumable live at customer or org level.
+  pricing AssetPricing?
+
   // Unique constraint for organization-scoped sequential IDs
   @@unique([organizationId, sequentialId], name: "asset_org_sequential_unique")
   // Special GIN index for optimization of simple search queries
@@ -880,6 +885,13 @@ model Organization {
 
   /// Customer-initiated booking requests awaiting approval. See {@link BookingRequest}.
   bookingRequests BookingRequest[]
+
+  /// Org-level default pricing for billable events. Falls back when no
+  /// customer- or asset-level override exists. See {@link OrgPricing}.
+  orgPricing OrgPricing?
+
+  /// Per-customer pricing overrides. See {@link CustomerPricing}.
+  customerPricings CustomerPricing[]
 
   // Migration flag to track if sequential IDs have been generated for this organization's existing assets
   hasSequentialIdsMigrated Boolean @default(false)
@@ -2370,4 +2382,93 @@ model BillableEvent {
   @@index([carbonCustomerId, occurredAt])
   @@index([assetId])
   @@index([kind, status, occurredAt])
+}
+
+// =============================================================================
+// Billing rates (Shelf as source of truth)
+// =============================================================================
+//
+// Pricing config now lives in Shelf (was previously planned to come from
+// Carbon via a placeholder FDW view that never landed). Rates resolve via a
+// three-tier hierarchy: asset → customer → org.  The pricing service walks
+// these in order and returns the first non-null hit.
+//
+// Per-kit rates intentionally do not exist — kit rental cost = sum of
+// constituent assets' rentalPerDayCents. Decision captured in
+// `superpowers/plans/2026-05-11-customer-tenancy-and-requests.md`.
+//
+// All `*Cents` fields are nullable. NULL at every tier means "no charge of
+// this kind" and the billing emitter skips writing a BillableEvent.
+// =============================================================================
+
+/// Org-level default pricing. One row per Organization (PK = organizationId).
+/// Acts as the fallback tier when no customer- or asset-level override
+/// exists. Currency at this level applies to every cents field unless a
+/// CustomerPricing row overrides it.
+model OrgPricing {
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organizationId String       @id
+
+  /// Daily storage rate per customer-owned asset in storage. Minor units.
+  storagePerDayCents Int?
+  /// Flat charge per pick (asset checked out of storage / shipped).
+  pickCents Int?
+  /// Flat charge per return (asset returned to storage).
+  returnCents Int?
+  /// Daily rental rate for Fieldkit-owned rentable assets.
+  rentalPerDayCents Int?
+
+  /// Multiplier on Asset.valuation charged when a rental is declared lost.
+  /// e.g. 1.5000 = 150% of book value. Decimal so we can store fractional
+  /// multipliers exactly without IEEE-754 drift.
+  rentalLossMultiplier Decimal? @db.Decimal(6, 4)
+  /// Markup applied to consumable items' unit cost on consumption.
+  /// e.g. 0.2500 = 25% markup. Decimal for the same reason as above.
+  consumableMarkupPct Decimal? @db.Decimal(6, 4)
+
+  /// ISO-4217 currency code. All cents fields are interpreted in this currency.
+  currencyCode String @default("USD")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Per-Carbon-customer pricing override. Null fields fall through to
+/// OrgPricing. There is no FK on carbonCustomerId — Carbon owns customer
+/// master data and lives in the FDW schema.
+model CustomerPricing {
+  carbonCustomerId String @id
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organizationId String
+
+  storagePerDayCents Int?
+  pickCents          Int?
+  returnCents        Int?
+  rentalPerDayCents  Int?
+  rentalLossMultiplier Decimal? @db.Decimal(6, 4)
+  consumableMarkupPct  Decimal? @db.Decimal(6, 4)
+  /// Override the org's currencyCode when set. When null the org default applies.
+  currencyCode String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+/// Per-asset pricing override. Only storage and rental rates are settable
+/// at this level; pick/return/loss/consumable are customer- or org-wide
+/// concepts that don't make sense per-asset. Currency always comes from
+/// the customer or org tier.
+model AssetPricing {
+  assetId String @id
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  storagePerDayCents Int?
+  rentalPerDayCents  Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
