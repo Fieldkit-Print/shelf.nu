@@ -28,10 +28,12 @@ import { Logger } from "~/utils/logger";
 import type { CarbonBillingLineItemPayload } from "./types";
 
 /**
- * Endpoint path on Carbon. Proposed contract; update once Carbon defines
- * the actual route name.
+ * Endpoint path on Carbon. Implemented at
+ * `Carbon/apps/erp/app/routes/api+/integrations.shelf.billable-events.ts`
+ * and mirrors the auth + response-envelope shape of the Medusa-integration
+ * endpoint.
  */
-const BILLING_ENDPOINT = "/api/billing/line-items";
+const BILLING_ENDPOINT = "/api/integrations/shelf/billable-events";
 
 /**
  * Pushes one billable event. Updates the row with success / failure state.

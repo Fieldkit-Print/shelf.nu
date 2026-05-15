@@ -100,12 +100,10 @@ import {
   isBookingExpired,
 } from "./utils.server";
 import { recordEvent, recordEvents } from "../activity-event/service.server";
-import {
-  emitPickEvents,
-  emitReturnEvents,
-} from "../billing/event-emission.server";
+import { recordPick, recordReturn } from "../billing/events.server";
 import { createSystemBookingNote } from "../booking-note/service.server";
 import { createNotes } from "../note/service.server";
+import { resolveFlatRateCents } from "../pricing/resolver.server";
 
 import { TAG_WITH_COLOR_SELECT } from "../tag/constants";
 import { getUserByID } from "../user/service.server";
@@ -1364,15 +1362,31 @@ export async function checkoutBooking({
           tx
         );
 
-        // Billing — PICK event per customer-owned asset, inside the tx so it
-        // commits atomically with the status change. Fieldkit-owned assets
-        // (carbonCustomerId IS NULL) are skipped automatically by the emitter.
-        await emitPickEvents({
-          organizationId,
-          bookingId: bookingFound.id,
-          assets: bookingFound.assets,
-          tx,
-        });
+        // Billing — PICK event per customer-owned asset. Resolves the rate
+        // at write time via the asset → customer → org hierarchy so the
+        // stored amountCents reflects the price as of checkout, even if
+        // tiers change later. Fieldkit-owned assets (carbonCustomerId
+        // IS NULL) are skipped — no customer to bill for picking a rental.
+        for (const asset of bookingFound.assets) {
+          if (!asset.carbonCustomerId) continue;
+          const resolved = await resolveFlatRateCents({
+            organizationId,
+            carbonCustomerId: asset.carbonCustomerId,
+            assetId: asset.id,
+            kind: "PICK",
+          });
+          if (!resolved) continue;
+          await recordPick({
+            organizationId,
+            carbonCustomerId: asset.carbonCustomerId,
+            assetId: asset.id,
+            carbonPartId: null,
+            locationId: null,
+            occurredAt: new Date(),
+            amountCents: resolved.amountCents,
+            currencyCode: resolved.currencyCode,
+          });
+        }
       }
     });
 
@@ -1703,14 +1717,28 @@ export async function checkinBooking({
             tx
           );
 
-          // Billing — RETURN event per customer-owned asset coming back to
-          // storage. Same atomicity guarantee as the activity events above.
-          await emitReturnEvents({
-            organizationId,
-            bookingId: bookingFound.id,
-            assets: bookingFound.assets,
-            tx,
-          });
+          // Billing — RETURN event per customer-owned asset coming back
+          // to storage. Same pricing-resolution pattern as PICK above.
+          for (const asset of bookingFound.assets) {
+            if (!asset.carbonCustomerId) continue;
+            const resolved = await resolveFlatRateCents({
+              organizationId,
+              carbonCustomerId: asset.carbonCustomerId,
+              assetId: asset.id,
+              kind: "RETURN",
+            });
+            if (!resolved) continue;
+            await recordReturn({
+              organizationId,
+              carbonCustomerId: asset.carbonCustomerId,
+              assetId: asset.id,
+              carbonPartId: null,
+              locationId: null,
+              occurredAt: new Date(),
+              amountCents: resolved.amountCents,
+              currencyCode: resolved.currencyCode,
+            });
+          }
         }
 
         /** Finally update the booking */

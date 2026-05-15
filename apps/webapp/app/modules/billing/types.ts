@@ -66,6 +66,16 @@ export type BillingPushJob =
        *  BillableEvent rows for the previous day. Safe to retry: storage
        *  events are keyed on (asset, day) for idempotency. */
       kind: "run-storage-billing";
+    }
+  | {
+      /** Run the daily rental-use billing pass.
+       *
+       *  Scheduled by pg-boss cron at ~03:15 UTC (offset from storage so
+       *  they don't contend on the same DB). Emits RENTAL_USE
+       *  BillableEvent rows for each Fieldkit-owned rentable asset
+       *  currently on an active booking that overlaps the billing day.
+       *  Safe to retry: keyed on (booking, asset, day). */
+      kind: "run-rental-use-billing";
     };
 
 /**

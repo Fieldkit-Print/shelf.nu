@@ -29,7 +29,10 @@ import {
   drainPendingBillableEvents,
   pushBillableEvent,
 } from "./carbon-push.server";
-import { runDailyStorageBilling } from "./storage-billing.server";
+import {
+  runDailyRentalUseBilling,
+  runDailyStorageBilling,
+} from "./storage-billing.server";
 import type { BillingPushJob } from "./types";
 
 /**
@@ -60,6 +63,16 @@ export async function registerBillingWorker() {
   );
   Logger.info("[Billing] Daily storage cron scheduled (03:00 UTC)");
 
+  // Rental-use billing runs daily at 03:15 UTC — offset from storage so
+  // the two passes don't contend on the same DB. Bills "yesterday" too.
+  await scheduler.schedule(
+    QueueNames.billingPushQueue,
+    "15 3 * * *",
+    { kind: "run-rental-use-billing" } satisfies BillingPushJob,
+    { tz: "UTC" }
+  );
+  Logger.info("[Billing] Daily rental-use cron scheduled (03:15 UTC)");
+
   // Push pending events every 15 minutes. Carbon's billing endpoint may
   // be down; failures stay in FAILED status and the next drain retries.
   await scheduler.schedule(
@@ -87,6 +100,11 @@ async function runJob(job: BillingPushJob) {
     case "run-storage-billing": {
       const result = await runDailyStorageBilling();
       Logger.info("[Billing] Storage cron complete", result);
+      return;
+    }
+    case "run-rental-use-billing": {
+      const result = await runDailyRentalUseBilling();
+      Logger.info("[Billing] Rental-use cron complete", result);
       return;
     }
     default: {
