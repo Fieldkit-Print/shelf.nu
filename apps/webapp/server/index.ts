@@ -174,6 +174,7 @@ export default createHonoServer<ServerEnv>({
           "/api/oss-friends",
           "/api/stripe-webhook",
           "/api/webhooks/carbon",
+          "/api/shipstation/orders",
           "/qr",
           "/qr/:qrId",
           "/qr/:qrId/not-logged-in",

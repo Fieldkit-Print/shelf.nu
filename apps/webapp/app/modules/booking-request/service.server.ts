@@ -57,9 +57,13 @@ function buildEmailContext(
 ) {
   const items: string[] = [];
   if (itemCounts.assetCount > 0)
-    items.push(`${itemCounts.assetCount} asset${itemCounts.assetCount > 1 ? "s" : ""}`);
+    items.push(
+      `${itemCounts.assetCount} asset${itemCounts.assetCount > 1 ? "s" : ""}`
+    );
   if (itemCounts.kitCount > 0)
-    items.push(`${itemCounts.kitCount} kit${itemCounts.kitCount > 1 ? "s" : ""}`);
+    items.push(
+      `${itemCounts.kitCount} kit${itemCounts.kitCount > 1 ? "s" : ""}`
+    );
   return {
     requestId: request.id,
     requesterName: resolveUserDisplayName(requester) || requester.email,
@@ -132,7 +136,14 @@ export async function submitBookingRequest(args: {
             status: initialStatus,
             proposedFrom: input.proposedFrom,
             proposedTo: input.proposedTo,
-            shippingAddress: input.shippingAddress ?? null,
+            shipToName: input.shipToName ?? null,
+            shipToPhone: input.shipToPhone ?? null,
+            shipToLine1: input.shipToLine1 ?? null,
+            shipToLine2: input.shipToLine2 ?? null,
+            shipToCity: input.shipToCity ?? null,
+            shipToState: input.shipToState ?? null,
+            shipToPostal: input.shipToPostal ?? null,
+            shipToCountry: input.shipToCountry ?? null,
             notes: input.notes ?? null,
             assets: input.assetIds.length
               ? { connect: input.assetIds.map((id) => ({ id })) }
@@ -332,9 +343,7 @@ export async function approveFieldkit(args: {
 
       // Expand kits into asset ids. Dedupe with the direct asset list so a
       // single Booking row never references the same asset twice.
-      const allAssetIds = new Set<string>(
-        current.assets.map((a) => a.id)
-      );
+      const allAssetIds = new Set<string>(current.assets.map((a) => a.id));
       for (const kit of current.kits) {
         for (const asset of kit.assets) {
           allAssetIds.add(asset.id);
@@ -503,10 +512,7 @@ export async function rejectBookingRequest(args: {
     // Email requester. When Fieldkit rejected AFTER internal approval, also
     // CC the internal approver so they know their endorsement got overruled.
     const recipients = new Set<string>([result.current.requester.email]);
-    if (
-      side === "fieldkit" &&
-      result.current.internalApprover?.email
-    ) {
+    if (side === "fieldkit" && result.current.internalApprover?.email) {
       recipients.add(result.current.internalApprover.email);
     }
     const ctx = buildEmailContext(result.updated, result.current.requester, {

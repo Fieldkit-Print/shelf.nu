@@ -236,6 +236,15 @@ model Asset {
   ///   Non-Inventory   → no Asset record
   kind AssetKind @default(INSTANCE)
 
+  /// Shipping dimensions / weight. All nullable — Shipstation accepts orders
+  /// without these and lets the operator fill them in at label time. We
+  /// expose them on the asset form so they can be captured once per SKU and
+  /// flow into every outbound order automatically.
+  weightOz Decimal? @db.Decimal(10, 3)
+  lengthIn Decimal? @db.Decimal(10, 3)
+  widthIn  Decimal? @db.Decimal(10, 3)
+  heightIn Decimal? @db.Decimal(10, 3)
+
   // Datetime
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2189,9 +2198,36 @@ model BookingRequest {
   proposedFrom    DateTime  @db.Timestamptz(3)
   proposedTo      DateTime  @db.Timestamptz(3)
 
-  /// Optional shipping address override for picks. Null = use customer's
-  /// default shipping address from Carbon.
-  shippingAddress String?
+  // ===========================================================================
+  // Ship-to address. All nullable — leave empty to fall back to the
+  // customer's default shipping address pulled from Carbon via the FDW
+  // `carbon_remote.v1_customer_locations` view. Requesters / staff can
+  // override any subset here at request time.
+  // ===========================================================================
+  shipToName    String?
+  shipToPhone   String?
+  shipToLine1   String?
+  shipToLine2   String?
+  shipToCity    String?
+  shipToState   String?
+  shipToPostal  String?
+  shipToCountry String?
+
+  // ===========================================================================
+  // Shipstation integration state. Populated by the Custom Store flow at
+  // `app/routes/api+/shipstation.orders.ts`. `shipstationOrderId` is set
+  // when Shipstation first imports the order via the export poll.
+  // Outbound vs return shipments are distinguished by which timestamp
+  // column the shipnotify handler stamps.
+  // ===========================================================================
+  shipstationOrderId              String?
+  shipstationShippedAt            DateTime? @db.Timestamptz(3)
+  shipstationTrackingNumber       String?
+  shipstationCarrier              String?
+  shipstationReturnLabelCreatedAt DateTime? @db.Timestamptz(3)
+  shipstationReturnTrackingNumber String?
+  shipstationReturnDeliveredAt    DateTime? @db.Timestamptz(3)
+
   /// Optional free-text from the requester (handling notes, urgency, etc.).
   notes           String?
 

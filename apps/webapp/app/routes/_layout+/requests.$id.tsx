@@ -34,6 +34,34 @@ import {
 import { requirePermission } from "~/utils/roles.server";
 import { resolveUserDisplayName } from "~/utils/user";
 
+/**
+ * Returns true when any structured ship-to field has been overridden on
+ * the request. Used to decide whether to render the Shipping Address
+ * section vs. fall back to the customer's default address (which is
+ * resolved at Shipstation export time, not in this UI).
+ */
+function hasShipToOverride(req: {
+  shipToName: string | null;
+  shipToPhone: string | null;
+  shipToLine1: string | null;
+  shipToLine2: string | null;
+  shipToCity: string | null;
+  shipToState: string | null;
+  shipToPostal: string | null;
+  shipToCountry: string | null;
+}): boolean {
+  return Boolean(
+    req.shipToName ||
+      req.shipToPhone ||
+      req.shipToLine1 ||
+      req.shipToLine2 ||
+      req.shipToCity ||
+      req.shipToState ||
+      req.shipToPostal ||
+      req.shipToCountry
+  );
+}
+
 function statusColor(status: BookingRequestStatus) {
   switch (status) {
     case "APPROVED":
@@ -123,7 +151,9 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
         });
         canApproveOrReject = !!contactPerm?.canApproveBookings;
       }
-    } else if (bookingRequest.status === BookingRequestStatus.PENDING_FIELDKIT) {
+    } else if (
+      bookingRequest.status === BookingRequestStatus.PENDING_FIELDKIT
+    ) {
       // Any non-CUSTOMER staff member with booking.update can act here.
       canApproveOrReject = !isCustomer;
     }
@@ -266,14 +296,29 @@ export default function RequestDetail() {
             </section>
           ) : null}
 
-          {request.shippingAddress ? (
+          {hasShipToOverride(request) ? (
             <section className="rounded-lg border border-gray-200 bg-white p-6">
               <h2 className="mb-2 text-sm font-semibold text-gray-900">
                 Shipping address
               </h2>
-              <p className="whitespace-pre-wrap text-sm text-gray-700">
-                {request.shippingAddress}
-              </p>
+              <address className="whitespace-pre-wrap text-sm not-italic text-gray-700">
+                {[
+                  request.shipToName,
+                  request.shipToLine1,
+                  request.shipToLine2,
+                  [
+                    request.shipToCity,
+                    request.shipToState,
+                    request.shipToPostal,
+                  ]
+                    .filter(Boolean)
+                    .join(", "),
+                  request.shipToCountry,
+                  request.shipToPhone,
+                ]
+                  .filter(Boolean)
+                  .join("\n")}
+              </address>
             </section>
           ) : null}
         </div>

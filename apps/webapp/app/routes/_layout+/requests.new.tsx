@@ -13,7 +13,13 @@
  */
 
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
-import { data, Form, redirect, useActionData, useLoaderData } from "react-router";
+import {
+  data,
+  Form,
+  redirect,
+  useActionData,
+  useLoaderData,
+} from "react-router";
 import { useZorm } from "react-zorm";
 
 import Input from "~/components/forms/input";
@@ -181,9 +187,9 @@ export const handle = {
 export default function NewRequest() {
   const { assets, kits, canRentInventory } = useLoaderData<typeof loader>();
   const actionData = useActionData<DataOrErrorResponse>();
-  const validationErrors = getValidationErrors<typeof submitBookingRequestSchema>(
-    actionData?.error
-  );
+  const validationErrors = getValidationErrors<
+    typeof submitBookingRequestSchema
+  >(actionData?.error);
   const zo = useZorm("NewBookingRequest", submitBookingRequestSchema);
   const disabled = useDisabled();
 
@@ -301,31 +307,100 @@ export default function NewRequest() {
         </section>
 
         <section className="rounded-lg border border-gray-200 bg-white p-6">
-          <h2 className="mb-4 text-sm font-semibold text-gray-900">
-            Shipping &amp; notes (optional)
+          <h2 className="mb-1 text-sm font-semibold text-gray-900">
+            Shipping address (optional)
           </h2>
-          <Input
-            label="Shipping address override"
-            name={zo.fields.shippingAddress()}
-            placeholder="Leave blank to use the default address on file"
-            error={
-              validationErrors?.shippingAddress?.message ||
-              zo.errors.shippingAddress()?.message
-            }
-          />
-          <div className="mt-4">
+          <p className="mb-4 text-xs text-gray-500">
+            Leave blank to ship to your default address on file. Fill any subset
+            of the fields below to override per-field.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
             <Input
-              inputType="textarea"
-              label="Notes for Fieldkit"
-              name={zo.fields.notes()}
-              placeholder="Handling instructions, urgency, contact info, etc."
-              rows={4}
+              label="Recipient name"
+              name={zo.fields.shipToName()}
               error={
-                validationErrors?.notes?.message ||
-                zo.errors.notes()?.message
+                validationErrors?.shipToName?.message ||
+                zo.errors.shipToName()?.message
+              }
+            />
+            <Input
+              label="Phone"
+              name={zo.fields.shipToPhone()}
+              error={
+                validationErrors?.shipToPhone?.message ||
+                zo.errors.shipToPhone()?.message
+              }
+            />
+            <div className="sm:col-span-2">
+              <Input
+                label="Address line 1"
+                name={zo.fields.shipToLine1()}
+                error={
+                  validationErrors?.shipToLine1?.message ||
+                  zo.errors.shipToLine1()?.message
+                }
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Input
+                label="Address line 2"
+                name={zo.fields.shipToLine2()}
+                error={
+                  validationErrors?.shipToLine2?.message ||
+                  zo.errors.shipToLine2()?.message
+                }
+              />
+            </div>
+            <Input
+              label="City"
+              name={zo.fields.shipToCity()}
+              error={
+                validationErrors?.shipToCity?.message ||
+                zo.errors.shipToCity()?.message
+              }
+            />
+            <Input
+              label="State / Province"
+              name={zo.fields.shipToState()}
+              error={
+                validationErrors?.shipToState?.message ||
+                zo.errors.shipToState()?.message
+              }
+            />
+            <Input
+              label="Postal code"
+              name={zo.fields.shipToPostal()}
+              error={
+                validationErrors?.shipToPostal?.message ||
+                zo.errors.shipToPostal()?.message
+              }
+            />
+            <Input
+              label="Country (ISO 2-letter)"
+              name={zo.fields.shipToCountry()}
+              placeholder="US"
+              error={
+                validationErrors?.shipToCountry?.message ||
+                zo.errors.shipToCountry()?.message
               }
             />
           </div>
+        </section>
+
+        <section className="rounded-lg border border-gray-200 bg-white p-6">
+          <h2 className="mb-4 text-sm font-semibold text-gray-900">
+            Notes (optional)
+          </h2>
+          <Input
+            inputType="textarea"
+            label="Notes for Fieldkit"
+            name={zo.fields.notes()}
+            placeholder="Handling instructions, urgency, contact info, etc."
+            rows={4}
+            error={
+              validationErrors?.notes?.message || zo.errors.notes()?.message
+            }
+          />
         </section>
 
         <div className="flex items-center justify-end gap-2">

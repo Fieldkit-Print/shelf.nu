@@ -20,7 +20,16 @@ export const submitBookingRequestSchema = z
     proposedTo: z.coerce.date(),
     assetIds: z.array(z.string()).default([]),
     kitIds: z.array(z.string()).default([]),
-    shippingAddress: z.string().trim().max(1000).optional(),
+    // Structured ship-to. All optional — empty fields fall back to the
+    // customer's default location pulled from Carbon at order-export time.
+    shipToName: z.string().trim().max(200).optional(),
+    shipToPhone: z.string().trim().max(50).optional(),
+    shipToLine1: z.string().trim().max(200).optional(),
+    shipToLine2: z.string().trim().max(200).optional(),
+    shipToCity: z.string().trim().max(100).optional(),
+    shipToState: z.string().trim().max(50).optional(),
+    shipToPostal: z.string().trim().max(20).optional(),
+    shipToCountry: z.string().trim().max(50).optional(),
     notes: z.string().trim().max(5000).optional(),
   })
   .refine((data) => data.proposedTo > data.proposedFrom, {

@@ -163,6 +163,37 @@ CREATE OR REPLACE VIEW public_api.v1_warehouse_pricing AS
 GRANT SELECT ON public_api.v1_warehouse_pricing TO shelf_fdw_reader;
 
 -- -----------------------------------------------------------------------------
+-- v1_customer_locations
+--
+-- Customer ship-to addresses joined with the underlying `address` row.
+-- Shelf falls back to these when a BookingRequest leaves ship-to fields
+-- blank — staff entered a request without explicitly choosing an address
+-- and we resolve to the customer's primary location at order-export time.
+--
+-- One row per customerLocation; a customer can have many. Shelf currently
+-- treats the first row (lowest id alphabetically) as the default — that's
+-- fine for the single-location customers Fieldkit has today and can be
+-- evolved into a `is_default` flag later.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW public_api.v1_customer_locations AS
+  SELECT
+    cl.id,
+    cl."customerId"           AS customer_id,
+    a."companyId"             AS company_id,
+    cl.name,
+    a."addressLine1"          AS address_line_1,
+    a."addressLine2"          AS address_line_2,
+    a.city,
+    a."stateProvince"         AS state_province,
+    a."postalCode"            AS postal_code,
+    a."countryCode"           AS country_code,
+    a.phone
+  FROM public."customerLocation" cl
+  JOIN public.address a ON a.id = cl."addressId";
+
+GRANT SELECT ON public_api.v1_customer_locations TO shelf_fdw_reader;
+
+-- -----------------------------------------------------------------------------
 -- v1_item_ledger
 --
 -- Subset of `itemLedger` rows exposing the columns Shelf needs to (a)

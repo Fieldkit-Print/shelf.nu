@@ -83,6 +83,13 @@ declare global {
       // module upserts every Carbon customer under this org id. Required when
       // any of the CARBON_* vars above are set.
       FIELDKIT_PRIMARY_ORGANIZATION_ID: string;
+      // Shipstation Custom Store basic-auth credentials. Configured on
+      // Shipstation's side under Settings → Stores → "Custom Store" with
+      // matching values; required for the polling export + shipnotify
+      // endpoints at /api/shipstation/orders to authenticate inbound
+      // Shipstation traffic.
+      SHIPSTATION_BASIC_AUTH_USERNAME: string;
+      SHIPSTATION_BASIC_AUTH_PASSWORD: string;
     }
   }
 }
@@ -241,6 +248,20 @@ export const FIELDKIT_CARBON_COMPANY_ID = getEnv("FIELDKIT_CARBON_COMPANY_ID", {
 export const FIELDKIT_PRIMARY_ORGANIZATION_ID = getEnv(
   "FIELDKIT_PRIMARY_ORGANIZATION_ID",
   { isRequired: false }
+);
+/**
+ * Shipstation Custom Store basic-auth credentials. Both must be set in
+ * tandem; the `/api/shipstation/orders` route 401s when either is missing.
+ * The matching pair is configured on Shipstation's side under
+ * Settings → Stores → "Custom Store".
+ */
+export const SHIPSTATION_BASIC_AUTH_USERNAME = getEnv(
+  "SHIPSTATION_BASIC_AUTH_USERNAME",
+  { isRequired: false }
+);
+export const SHIPSTATION_BASIC_AUTH_PASSWORD = getEnv(
+  "SHIPSTATION_BASIC_AUTH_PASSWORD",
+  { isSecret: true, isRequired: false }
 );
 export const SENTRY_DSN = getEnv("SENTRY_DSN", {
   isSecret: false,
