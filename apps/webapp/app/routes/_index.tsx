@@ -24,10 +24,8 @@ import {
   redirect,
   useActionData,
   useNavigation,
-  type ActionFunctionArgs,
-  type LoaderFunctionArgs,
 } from "react-router";
-// eslint-disable-next-line import/order
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { sendEmail } from "~/emails/mail.server";
 import { tw } from "~/utils/tw";
 
@@ -68,9 +66,7 @@ export const loader = ({ context }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 /** Shape returned by the quote form action. */
-type QuoteActionData =
-  | { success: true }
-  | { success: false; error: string };
+type QuoteActionData = { success: true } | { success: false; error: string };
 
 /**
  * Handles the quote request form submission.
@@ -417,9 +413,7 @@ function PricingSection({ onGetQuote }: PricingSectionProps) {
               key={tier.name}
               className={tw(
                 "relative flex flex-col gap-4 rounded-xl border bg-white p-6 shadow-sm",
-                tier.popular
-                  ? "border-primary"
-                  : "border-gray-200"
+                tier.popular ? "border-primary" : "border-gray-200"
               )}
             >
               {tier.popular && (
@@ -600,8 +594,7 @@ const FEATURES: Feature[] = [
   },
   {
     headline: "Declared value insurance",
-    description:
-      "Coverage included up to declared value, riders available",
+    description: "Coverage included up to declared value, riders available",
   },
   {
     headline: "Climate-controlled facility",
@@ -777,10 +770,7 @@ function WhyFieldKitSection() {
         <div className="mt-12 rounded-xl bg-white px-6 py-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6">
             {TRUST_ITEMS.map((item) => (
-              <span
-                key={item}
-                className="text-sm font-medium text-gray-600"
-              >
+              <span key={item} className="text-sm font-medium text-gray-600">
                 {item}
               </span>
             ))}
@@ -925,9 +915,7 @@ function FinalCtaSection({ onGetQuote }: FinalCtaSectionProps) {
   return (
     <section className="bg-gray-900 py-20">
       <div className="mx-auto flex max-w-2xl flex-col items-center gap-6 px-4 text-center sm:px-6">
-        <h2 className="text-4xl font-bold text-white">
-          Ready to consolidate?
-        </h2>
+        <h2 className="text-4xl font-bold text-white">Ready to consolidate?</h2>
         <p className="text-lg text-gray-300">
           Get a quote in 24 hours. No commitment, no pressure.
         </p>
@@ -973,7 +961,11 @@ interface QuoteModalProps {
  * Uses a Remix Form (method="POST") with a hidden `intent="quote"` field.
  * Shows a success state after a successful submission.
  */
-function QuoteModal({ prefilledPallets, actionData, onClose }: QuoteModalProps) {
+function QuoteModal({
+  prefilledPallets,
+  actionData,
+  onClose,
+}: QuoteModalProps) {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const isSuccess = actionData?.success === true;
@@ -1108,7 +1100,9 @@ function QuoteModal({ prefilledPallets, actionData, onClose }: QuoteModalProps) 
                   name="pallets"
                   type="number"
                   min={0}
-                  defaultValue={prefilledPallets > 0 ? prefilledPallets : undefined}
+                  defaultValue={
+                    prefilledPallets > 0 ? prefilledPallets : undefined
+                  }
                   className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
                 />
               </div>

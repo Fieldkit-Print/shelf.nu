@@ -55,7 +55,9 @@ function parseStatusTab(value: string | null): StatusTabValue {
   return valid ? (value as StatusTabValue) : "ACTIVE";
 }
 
-function statusesForTab(tab: StatusTabValue): BookingRequestStatus[] | undefined {
+function statusesForTab(
+  tab: StatusTabValue
+): BookingRequestStatus[] | undefined {
   if (tab === "ALL") return undefined;
   if (tab === "ACTIVE") return ACTIVE_STATUSES;
   return [tab];
@@ -96,9 +98,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
     const result = await listBookingRequests({
       organizationId,
       // CUSTOMER: scope to their carbonCustomerId. Fieldkit staff: org-wide.
-      ...(isCustomer && carbonCustomerId
-        ? { carbonCustomerId }
-        : {}),
+      ...(isCustomer && carbonCustomerId ? { carbonCustomerId } : {}),
       statuses: statusesForTab(tab),
       include: {
         requester: {

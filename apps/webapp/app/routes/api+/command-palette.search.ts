@@ -160,17 +160,14 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
     // CUSTOMER role gets kit + booking search scoped to their carbonCustomerId.
     // Locations, audits, team members are internal Fieldkit surfaces and
     // are never returned to CUSTOMER users.
-    const hasKitPermission =
-      ["OWNER", "ADMIN"].includes(role) || isCustomer;
+    const hasKitPermission = ["OWNER", "ADMIN"].includes(role) || isCustomer;
     const hasBookingPermission =
       !isPersonalWorkspace &&
       (["OWNER", "ADMIN", "SELF_SERVICE", "BASE"].includes(role) || isCustomer);
     const hasLocationPermission =
       ["OWNER", "ADMIN"].includes(role) && !isCustomer;
     const hasTeamMemberPermission =
-      !isPersonalWorkspace &&
-      ["OWNER", "ADMIN"].includes(role) &&
-      !isCustomer;
+      !isPersonalWorkspace && ["OWNER", "ADMIN"].includes(role) && !isCustomer;
     const hasAuditPermission = !isCustomer;
 
     // Customer-tenancy filters. Empty for non-CUSTOMER roles.
@@ -190,9 +187,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
         ...(kitSearchConditions.length
           ? [{ OR: kitSearchConditions } as Prisma.KitWhereInput]
           : []),
-        ...(Object.keys(kitCustomerScope).length > 0
-          ? [kitCustomerScope]
-          : []),
+        ...(Object.keys(kitCustomerScope).length > 0 ? [kitCustomerScope] : []),
       ],
     };
 
@@ -209,9 +204,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       // BASE and SELF_SERVICE users can only see their own bookings unless org settings allow otherwise.
       // CUSTOMER scope (above) is stricter than canSeeAllBookings so we keep
       // both — Prisma ANDs the top-level conditions.
-      ...(canSeeAllBookings || isCustomer
-        ? {}
-        : { custodianUserId: userId }),
+      ...(canSeeAllBookings || isCustomer ? {} : { custodianUserId: userId }),
     };
 
     const locationWhere: Prisma.LocationWhereInput = {

@@ -511,8 +511,8 @@ export async function getPaginatedAndFilterableKits<
       const existingAnd = Array.isArray(where.AND)
         ? where.AND
         : where.AND
-          ? [where.AND]
-          : [];
+        ? [where.AND]
+        : [];
       where.AND = [...existingAnd, customerScope];
     }
 

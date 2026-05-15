@@ -147,8 +147,8 @@ export default function AssetPricingTab() {
             Asset pricing overrides
           </h3>
           <p className="text-xs text-gray-500">
-            Most-specific tier. Blank fields fall through to the customer or
-            org default (set at the{" "}
+            Most-specific tier. Blank fields fall through to the customer or org
+            default (set at the{" "}
             <Link
               to="/settings/pricing"
               className="text-primary-700 hover:underline"

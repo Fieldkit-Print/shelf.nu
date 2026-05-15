@@ -19,12 +19,8 @@ import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
 import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 
-import {
-  recordRentalUseDay,
-  recordStorageDay,
-} from "./events.server";
+import { recordRentalUseDay, recordStorageDay } from "./events.server";
 import { resolveFlatRateCents } from "../pricing/resolver.server";
-
 
 /**
  * Returns the UTC midnight `Date` for the given day. Defaults to "yesterday"

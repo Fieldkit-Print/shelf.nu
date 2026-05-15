@@ -30,11 +30,7 @@ const label = "Pricing" as const;
  * Pricing kinds that resolve to a flat cents amount. These map 1:1 to the
  * eponymous `BillableEventKind` values.
  */
-export type FlatRateKind =
-  | "STORAGE"
-  | "PICK"
-  | "RETURN"
-  | "RENTAL_USE";
+export type FlatRateKind = "STORAGE" | "PICK" | "RETURN" | "RENTAL_USE";
 
 /**
  * Result of a flat-rate resolution. `source` identifies which tier won
@@ -51,7 +47,10 @@ export type ResolvedRate = {
  * Maps a flat-rate kind to the column name on a *Pricing row that stores it.
  * Keeps the resolver code DRY while staying type-safe.
  */
-const KIND_TO_COLUMN: Record<FlatRateKind, "storagePerDayCents" | "pickCents" | "returnCents" | "rentalPerDayCents"> = {
+const KIND_TO_COLUMN: Record<
+  FlatRateKind,
+  "storagePerDayCents" | "pickCents" | "returnCents" | "rentalPerDayCents"
+> = {
   STORAGE: "storagePerDayCents",
   PICK: "pickCents",
   RETURN: "returnCents",
@@ -113,7 +112,8 @@ export async function resolveFlatRateCents(args: {
 
   // Walk most-specific to least.
   if (assetPricing) {
-    const value = assetPricing[column as "storagePerDayCents" | "rentalPerDayCents"];
+    const value =
+      assetPricing[column as "storagePerDayCents" | "rentalPerDayCents"];
     if (value !== null && value !== undefined) {
       return { amountCents: value, currencyCode, source: "asset" };
     }
@@ -151,13 +151,21 @@ export async function resolveRentalLossMultiplier(args: {
     db.customerPricing.findUnique({
       where: { carbonCustomerId: args.carbonCustomerId },
     }),
-    db.orgPricing.findUnique({ where: { organizationId: args.organizationId } }),
+    db.orgPricing.findUnique({
+      where: { organizationId: args.organizationId },
+    }),
   ]);
 
-  if (customer?.rentalLossMultiplier !== undefined && customer?.rentalLossMultiplier !== null) {
+  if (
+    customer?.rentalLossMultiplier !== undefined &&
+    customer?.rentalLossMultiplier !== null
+  ) {
     return { multiplier: customer.rentalLossMultiplier, source: "customer" };
   }
-  if (org?.rentalLossMultiplier !== undefined && org?.rentalLossMultiplier !== null) {
+  if (
+    org?.rentalLossMultiplier !== undefined &&
+    org?.rentalLossMultiplier !== null
+  ) {
     return { multiplier: org.rentalLossMultiplier, source: "org" };
   }
   return null;
@@ -175,13 +183,21 @@ export async function resolveConsumableMarkupPct(args: {
     db.customerPricing.findUnique({
       where: { carbonCustomerId: args.carbonCustomerId },
     }),
-    db.orgPricing.findUnique({ where: { organizationId: args.organizationId } }),
+    db.orgPricing.findUnique({
+      where: { organizationId: args.organizationId },
+    }),
   ]);
 
-  if (customer?.consumableMarkupPct !== undefined && customer?.consumableMarkupPct !== null) {
+  if (
+    customer?.consumableMarkupPct !== undefined &&
+    customer?.consumableMarkupPct !== null
+  ) {
     return { markupPct: customer.consumableMarkupPct, source: "customer" };
   }
-  if (org?.consumableMarkupPct !== undefined && org?.consumableMarkupPct !== null) {
+  if (
+    org?.consumableMarkupPct !== undefined &&
+    org?.consumableMarkupPct !== null
+  ) {
     return { markupPct: org.consumableMarkupPct, source: "org" };
   }
   return null;
@@ -202,7 +218,9 @@ export async function resolveCurrencyCode(args: {
           where: { carbonCustomerId: args.carbonCustomerId },
         })
       : Promise.resolve(null),
-    db.orgPricing.findUnique({ where: { organizationId: args.organizationId } }),
+    db.orgPricing.findUnique({
+      where: { organizationId: args.organizationId },
+    }),
   ]);
 
   if (!org) {

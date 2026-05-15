@@ -122,7 +122,9 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         requestId: id,
         approverId: userId,
       });
-      return data(payload({ request: result.request, booking: result.booking }));
+      return data(
+        payload({ request: result.request, booking: result.booking })
+      );
     }
 
     throw new ShelfError({

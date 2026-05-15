@@ -151,11 +151,9 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
     });
 
     const formData = await request.formData();
-    const { intent } = parseData(
-      formData,
-      z.object({ intent: IntentSchema }),
-      { additionalData: { carbonCustomerId } }
-    );
+    const { intent } = parseData(formData, z.object({ intent: IntentSchema }), {
+      additionalData: { carbonCustomerId },
+    });
 
     if (intent === "contact-permission") {
       const payload = parseData(formData, PermissionPatchSchema, {
@@ -191,8 +189,7 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         organizationId,
         carbonCustomerId,
         patch: {
-          requiresInternalApproval:
-            payload.requiresInternalApproval ?? false,
+          requiresInternalApproval: payload.requiresInternalApproval ?? false,
         },
       });
 

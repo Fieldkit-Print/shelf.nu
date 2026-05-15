@@ -23,7 +23,9 @@ const label = "Pricing" as const;
  * Empty/null/whitespace input returns null, signalling "no rate at this
  * tier" (which is distinct from zero, which is a valid charge).
  */
-export function dollarsToCents(input: string | null | undefined): number | null {
+export function dollarsToCents(
+  input: string | null | undefined
+): number | null {
   if (input === null || input === undefined) return null;
   const trimmed = String(input).trim();
   if (trimmed === "") return null;

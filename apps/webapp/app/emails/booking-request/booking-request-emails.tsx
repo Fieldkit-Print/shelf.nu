@@ -114,7 +114,9 @@ export const sendBookingRequestSubmittedEmail = async (args: {
     const text = commonText(args.context, title, body);
     void sendEmail({
       to: args.to.join(","),
-      subject: `Booking request ${args.context.requestId.slice(-8)}: ${args.awaitingInternal ? "awaiting your approval" : "from customer"}`,
+      subject: `Booking request ${args.context.requestId.slice(-8)}: ${
+        args.awaitingInternal ? "awaiting your approval" : "from customer"
+      }`,
       html,
       text,
     });
@@ -123,8 +125,7 @@ export const sendBookingRequestSubmittedEmail = async (args: {
       new ShelfError({
         cause,
         label: "BookingRequest",
-        message:
-          "Failed to send booking-request submitted email — see logs.",
+        message: "Failed to send booking-request submitted email — see logs.",
         additionalData: { requestId: args.context.requestId },
       })
     );
@@ -145,7 +146,9 @@ export const sendBookingRequestInternalApprovedEmail = async (args: {
     const text = commonText(args.context, title, body);
     void sendEmail({
       to: args.to.join(","),
-      subject: `Booking request ${args.context.requestId.slice(-8)}: internally approved`,
+      subject: `Booking request ${args.context.requestId.slice(
+        -8
+      )}: internally approved`,
       html,
       text,
     });
@@ -221,8 +224,7 @@ export const sendBookingRequestRejectedEmail = async (args: {
       new ShelfError({
         cause,
         label: "BookingRequest",
-        message:
-          "Failed to send booking-request rejected email — see logs.",
+        message: "Failed to send booking-request rejected email — see logs.",
         additionalData: { requestId: args.context.requestId },
       })
     );
