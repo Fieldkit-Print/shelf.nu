@@ -33,9 +33,8 @@ import {
   updateContactPermissions,
   upsertCustomerSetting,
 } from "~/modules/customer/service.server";
+import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
 import {
-  centsToDollars,
-  dollarsToCents,
   getCustomerPricing,
   upsertCustomerPricing,
 } from "~/modules/pricing/service.server";

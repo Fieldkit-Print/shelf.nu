@@ -19,9 +19,8 @@ import Input from "~/components/forms/input";
 import Header from "~/components/layout/header";
 import { Button } from "~/components/shared/button";
 import { useDisabled } from "~/hooks/use-disabled";
+import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
 import {
-  centsToDollars,
-  dollarsToCents,
   getOrgPricing,
   upsertOrgPricing,
 } from "~/modules/pricing/service.server";

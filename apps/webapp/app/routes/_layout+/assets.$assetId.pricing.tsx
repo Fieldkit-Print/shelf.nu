@@ -22,9 +22,8 @@ import { ErrorContent } from "~/components/errors";
 import Input from "~/components/forms/input";
 import { Button } from "~/components/shared/button";
 import { useDisabled } from "~/hooks/use-disabled";
+import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
 import {
-  centsToDollars,
-  dollarsToCents,
   getAssetPricing,
   upsertAssetPricing,
 } from "~/modules/pricing/service.server";

@@ -5,10 +5,13 @@
  * AssetPricing). Upserts are lazy — services accept patch objects with
  * optional fields and create the row on first write if it doesn't exist.
  *
- * Cents fields are exchanged with callers as raw integers. The route
- * layer handles dollar↔cents UI conversion (see {@link dollarsToCents}).
+ * Cents fields are exchanged with callers as raw integers. The dollar↔cents
+ * formatters live in {@link ./format.ts} (no `.server` suffix) so React
+ * route components can import them without dragging the server bundle
+ * into the client build.
  *
  * @see {@link file://./resolver.server.ts}
+ * @see {@link file://./format.ts}
  */
 
 import type { Prisma } from "@prisma/client";
@@ -16,33 +19,11 @@ import type { Prisma } from "@prisma/client";
 import { db } from "~/database/db.server";
 import { ShelfError } from "~/utils/error";
 
+// Re-exported so any callers still importing the formatters from this
+// module keep working. New code should import from './format' directly.
+export { centsToDollars, dollarsToCents } from "./format";
+
 const label = "Pricing" as const;
-
-/**
- * Convert a user-entered dollar string (e.g. "12.50") to integer cents.
- * Empty/null/whitespace input returns null, signalling "no rate at this
- * tier" (which is distinct from zero, which is a valid charge).
- */
-export function dollarsToCents(
-  input: string | null | undefined
-): number | null {
-  if (input === null || input === undefined) return null;
-  const trimmed = String(input).trim();
-  if (trimmed === "") return null;
-  const num = Number(trimmed);
-  if (!Number.isFinite(num)) return null;
-  return Math.round(num * 100);
-}
-
-/**
- * Inverse of dollarsToCents — formats cents as a fixed-2 decimal string
- * for prefilling inputs. Null input returns empty string so the input
- * renders as "blank" rather than "0.00".
- */
-export function centsToDollars(cents: number | null | undefined): string {
-  if (cents === null || cents === undefined) return "";
-  return (cents / 100).toFixed(2);
-}
 
 /** Get the OrgPricing row, or null if none exists yet. */
 export async function getOrgPricing(organizationId: string) {
