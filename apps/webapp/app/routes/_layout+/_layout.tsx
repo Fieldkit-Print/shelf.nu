@@ -291,7 +291,10 @@ export default function App() {
 
   return (
     <CommandPaletteRoot>
-      <SidebarProvider defaultOpen={!minimizedSidebar}>
+      <SidebarProvider
+        defaultOpen={!minimizedSidebar}
+        className="h-dvh overflow-hidden"
+      >
         <SkipLinks />
         <AtomsResetHandler />
         <AppSidebar id="navigation" />

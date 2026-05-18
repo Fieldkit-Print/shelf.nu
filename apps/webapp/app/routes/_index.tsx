@@ -235,12 +235,11 @@ function HeroSection({ onGetQuote }: HeroSectionProps) {
         {/* Text */}
         <div className="flex flex-col gap-6">
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-gray-900 sm:text-5xl">
-            Storage built for brand activations.
+            Fast, flexible storage for marketing teams.
           </h1>
           <p className="text-lg leading-relaxed text-gray-600">
-            Per-pallet pricing, portal access on every item, and the team that
-            built your activation already on-site. Based in Caldwell, Idaho —
-            west coast access without west coast rates.
+            Transparent per-pallet pricing, portal access, and fast west coast
+            transit times.
           </p>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
