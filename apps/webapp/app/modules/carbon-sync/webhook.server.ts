@@ -25,8 +25,10 @@
  *   - `customer`         → ack-only (Shelf reads via FDW, no mirror).
  *   - `customerContact`  → INSERT/UPDATE provision User; DELETE unlink.
  *   - `contact`          → UPDATE refreshes User email/name; INSERT/DELETE ignored.
- *   - `item`             → INSERT/UPDATE provision/archive CONSUMABLE Asset
- *                          when `visibleInShelf` qualifies; DELETE archive.
+ *   - `item`             → ack-only. Carbon no longer drives Shelf asset
+ *                          provisioning; assets are created natively in Shelf.
+ *   - `itemLedger`       → ack-only (see `item`).
+ *   - `trackedEntity`    → ack-only (see `item`).
  *
  * @see {@link file://./types.ts}            CarbonWebhookPayload shape
  * @see {@link file://./service.server.ts}   Upsert dispatch
@@ -40,12 +42,9 @@ import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 
 import {
-  archiveItemFromShelf,
   removeContactLink,
   updateUserFromContact,
-  upsertAssetFromItemLedger,
   upsertContactLink,
-  upsertItemForShelf,
 } from "./service.server";
 import type { CarbonWebhookPayload } from "./types";
 
@@ -128,21 +127,22 @@ export async function dispatchCarbonEvent(
     case "contact":
       return dispatchContact(payload);
     case "item":
-      return dispatchItem(payload);
     case "itemLedger":
-      return dispatchItemLedger(payload);
     case "trackedEntity":
-      // Tracked-entity master events are ack-only: Shelf doesn't react until
-      // the itemLedger row lands (that's when the unit is actually received
-      // into inventory). Updates to readableId / attributes / status can
-      // still be useful telemetry, hence the log.
-      Logger.dev("[Carbon Sync] trackedEntity event", {
-        type: payload.type,
-        id: payload.record.id,
-      });
-      return `trackedEntity ${
+      // Ack-only. Carbon no longer drives Shelf asset provisioning — assets
+      // are created natively in Shelf. We still accept these deliveries (so
+      // Carbon doesn't retry) but take no action beyond a telemetry log.
+      Logger.dev(
+        "[Carbon Sync] item-family event ignored (assets are Shelf-native)",
+        {
+          table: payload.table,
+          type: payload.type,
+          id: payload.record.id,
+        }
+      );
+      return `${payload.table} ${
         payload.record.id
-      } ${payload.type.toLowerCase()} (ack-only)`;
+      } ${payload.type.toLowerCase()} (ack-only, assets are Shelf-native)`;
     default: {
       const _exhaustive: never = payload;
       Logger.warn(
@@ -191,49 +191,4 @@ async function dispatchContact(
       return `ignored unknown contact event type ${_exhaustive as string}`;
     }
   }
-}
-
-async function dispatchItem(
-  payload: Extract<CarbonWebhookPayload, { table: "item" }>
-): Promise<string> {
-  switch (payload.type) {
-    case "INSERT":
-    case "UPDATE": {
-      const id = await upsertItemForShelf(payload.record);
-      return id
-        ? `item ${payload.record.id} provisioned/refreshed as Shelf asset ${id}`
-        : `item ${payload.record.id} not visible in Shelf (archived if existed)`;
-    }
-    case "DELETE":
-      await archiveItemFromShelf(payload.record.id);
-      return `item ${payload.record.id} archived in Shelf`;
-    default: {
-      const _exhaustive: never = payload.type;
-      return `ignored unknown item event type ${_exhaustive as string}`;
-    }
-  }
-}
-
-async function dispatchItemLedger(
-  payload: Extract<CarbonWebhookPayload, { table: "itemLedger" }>
-): Promise<string> {
-  // Only positive-quantity INSERTs with a trackedEntityId mint Shelf
-  // INSTANCE Assets — everything else is downstream movement we don't
-  // need to mirror (sales / consumption / etc. are handled by the
-  // Shelf-side custody + booking lifecycle).
-  if (payload.type !== "INSERT") {
-    return `itemLedger ${
-      payload.record.id
-    } ${payload.type.toLowerCase()} ignored (only INSERT mints)`;
-  }
-  if (!payload.record.trackedEntityId) {
-    return `itemLedger ${payload.record.id} ignored (no trackedEntityId — not serial)`;
-  }
-  if (payload.record.quantity <= 0) {
-    return `itemLedger ${payload.record.id} ignored (non-positive quantity ${payload.record.quantity})`;
-  }
-  const assetId = await upsertAssetFromItemLedger(payload.record);
-  return assetId
-    ? `itemLedger ${payload.record.id} provisioned Shelf asset ${assetId} (tracked entity ${payload.record.trackedEntityId})`
-    : `itemLedger ${payload.record.id} skipped (item not Serial / not visible in Shelf)`;
 }

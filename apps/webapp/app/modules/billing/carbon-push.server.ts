@@ -177,7 +177,11 @@ function toCarbonPayload(
     quantity: event.quantity,
     amountCents: event.amountCents,
     currencyCode: event.currencyCode,
-    carbonPartId: event.carbonPartId,
+    // Assets are Shelf-native — there is no Carbon part to reference. Carbon
+    // posts these bills against a generic service/charge item keyed by
+    // `kind` (STORAGE / RENTAL_USE / etc.). The column is retained on
+    // BillableEvent for history but always pushed as null.
+    carbonPartId: null,
     occurredAt: event.occurredAt.toISOString(),
     periodStart: event.periodStart ? event.periodStart.toISOString() : null,
     periodEnd: event.periodEnd ? event.periodEnd.toISOString() : null,

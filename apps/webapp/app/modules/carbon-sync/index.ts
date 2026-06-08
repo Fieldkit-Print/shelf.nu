@@ -6,8 +6,6 @@
  * - `dispatchCarbonEvent` / `verifyCarbonWebhookToken` — webhook entry points
  * - `upsertContactLink` / `removeContactLink` / `updateUserFromContact` —
  *   contact ↔ User provisioning (manual force-sync hooks)
- * - `upsertItemForShelf` / `archiveItemFromShelf` — CONSUMABLE Asset
- *   provisioning from Carbon item events
  * - `registerCarbonSyncWorker` — call once at server boot
  * - `reconcileAll` — programmatic full sync (contact links only)
  *
@@ -33,11 +31,9 @@ export {
 } from "./webhook.server";
 
 export {
-  archiveItemFromShelf,
   removeContactLink,
   updateUserFromContact,
   upsertContactLink,
-  upsertItemForShelf,
   upsertUserFromContact,
 } from "./service.server";
 
