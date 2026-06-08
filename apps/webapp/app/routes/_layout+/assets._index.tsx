@@ -10,6 +10,7 @@ import { z } from "zod";
 import { AssetsList } from "~/components/assets/assets-index/assets-list";
 import { ImportButton } from "~/components/assets/import-button";
 import Header from "~/components/layout/header";
+import { Button } from "~/components/shared/button";
 import When from "~/components/when/when";
 import { db } from "~/database/db.server";
 
@@ -354,8 +355,17 @@ export default function AssetIndexPage() {
             action: PermissionAction.create,
           })}
         >
-          {/* Fieldkit: single-asset creation moved to Carbon. CSV import kept as an admin escape hatch. */}
-          <ImportButton canImportAssets={canImportAssets} />
+          <>
+            <ImportButton canImportAssets={canImportAssets} />
+            <Button
+              to="new"
+              role="link"
+              aria-label={`new asset`}
+              data-test-id="createNewAsset"
+            >
+              New asset
+            </Button>
+          </>
         </When>
       </Header>
       <AssetsList
