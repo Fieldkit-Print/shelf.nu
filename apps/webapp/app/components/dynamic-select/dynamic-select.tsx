@@ -287,6 +287,7 @@ export default function DynamicSelect({
             )}
           >
             <button
+              type="button"
               className={tw(
                 "w-full",
                 disabled && "cursor-not-allowed opacity-60"
