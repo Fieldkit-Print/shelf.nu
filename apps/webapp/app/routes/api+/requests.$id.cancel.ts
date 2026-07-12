@@ -43,12 +43,12 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
       entity: PermissionEntity.booking,
       action: PermissionAction.update,
     });
-    const { isCustomer, carbonCustomerId } = perm;
+    const { isCustomer, customerId } = perm;
 
     const bookingRequest = await getBookingRequest(id);
 
     // Tenancy: CUSTOMER callers must belong to the request's customer.
-    if (isCustomer && bookingRequest.carbonCustomerId !== carbonCustomerId) {
+    if (isCustomer && bookingRequest.customerId !== customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",

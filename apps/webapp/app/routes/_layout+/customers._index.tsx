@@ -1,15 +1,14 @@
 /**
- * Customers Admin — List (FDW edition)
+ * Customers Admin — List
  *
- * Lists Carbon customers in the Fieldkit company with Shelf-side counters
- * (number of provisioned contact Users, number of stored Assets) merged in.
- * Customer master data is read live from Carbon's REST API — there is no
- * local Customer mirror after the FDW refactor.
+ * Lists the org's customers with Shelf-side counters (number of contact
+ * Users, number of stored Assets).
  *
  * Permissions: ADMIN/OWNER only — see Role2PermissionMap entry for
  * `PermissionEntity.customer`.
  *
  * @see {@link file://./customers.$customerId.tsx} Detail page
+ * @see {@link file://./customers.new.tsx} Create page
  * @see {@link file://./../../modules/customer/service.server.ts} Data layer
  */
 
@@ -52,8 +51,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
 
     const header: HeaderData = {
       title: "Customers",
-      subHeading:
-        "Customers from Carbon ERP. Master data is read-only — make edits in Carbon.",
+      subHeading: "Customers you store or rent inventory for.",
     };
 
     return {
@@ -104,8 +102,16 @@ export default function CustomersIndex() {
               Filter
             </button>
           </form>
-          <div className="text-xs text-gray-500">
-            {total} customer{total === 1 ? "" : "s"}
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-gray-500">
+              {total} customer{total === 1 ? "" : "s"}
+            </div>
+            <Link
+              to="/customers/new"
+              className="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white"
+            >
+              New customer
+            </Link>
           </div>
         </div>
 
@@ -124,7 +130,7 @@ export default function CustomersIndex() {
                   colSpan={3}
                   className="px-4 py-6 text-center text-sm text-gray-500"
                 >
-                  No customers in Carbon for this company yet.
+                  No customers yet.
                 </td>
               </tr>
             ) : (
@@ -140,9 +146,6 @@ export default function CustomersIndex() {
                     >
                       {c.displayName}
                     </Link>
-                    <div className="font-mono text-xs text-gray-500">
-                      Carbon id: {c.id}
-                    </div>
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {c.contactCount}

@@ -91,40 +91,33 @@ export async function requirePermission({
   const isCustomer = role === OrganizationRoles.CUSTOMER;
 
   /**
-   * Customer-tenancy linkage (Fieldkit only, FDW edition).
+   * Customer-tenancy linkage.
    *
-   * For CUSTOMER role users we resolve the linked `carbonCustomerId` here
-   * so every downstream query can scope correctly. Without this id the
-   * caller would either (a) leak other customers' data or (b) return
-   * nothing at all — both worse than failing fast.
-   *
-   * Customer master data (status, archivedAt) lives in Carbon and is read
-   * via the `carbon_remote.v1_customers` foreign view by callers that need
-   * it. We do not block sign-in here on archived state — that check moves
-   * to the route-level loader where FDW reads happen — because doing it
-   * inside `requirePermission()` would make every staff request couple to
-   * Carbon's availability.
+   * For CUSTOMER role users we resolve the linked `customerId` here so every
+   * downstream query can scope correctly. Without this id the caller would
+   * either (a) leak other customers' data or (b) return nothing at all — both
+   * worse than failing fast.
    *
    * Non-customer roles skip this block entirely (zero extra queries).
    */
-  let carbonCustomerId: string | null = null;
+  let customerId: string | null = null;
   let customerContactPermission: CustomerContactPermission | null = null;
 
   if (isCustomer) {
     const customerUser = await db.user.findUnique({
       where: { id: userId },
       select: {
-        carbonCustomerId: true,
+        fieldkitCustomerId: true,
         customerContactPermission: true,
       },
     });
 
-    if (!customerUser?.carbonCustomerId) {
+    if (!customerUser?.fieldkitCustomerId) {
       throw new ShelfError({
         cause: null,
         title: "Customer account not linked",
         message:
-          "Your account is not linked to a customer record. Please contact Fieldkit support.",
+          "Your account is not linked to a customer record. Please contact support.",
         additionalData: { userId, organizationId },
         label: "Permission",
         status: 403,
@@ -132,7 +125,7 @@ export async function requirePermission({
       });
     }
 
-    carbonCustomerId = customerUser.carbonCustomerId;
+    customerId = customerUser.fieldkitCustomerId;
     customerContactPermission = customerUser.customerContactPermission;
   }
 
@@ -182,7 +175,7 @@ export async function requirePermission({
     role,
     isSelfServiceOrBase,
     isCustomer,
-    carbonCustomerId,
+    customerId,
     customerContactPermission,
     userOrganizations,
     canSeeAllBookings,

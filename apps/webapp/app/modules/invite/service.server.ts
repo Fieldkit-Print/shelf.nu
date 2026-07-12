@@ -25,6 +25,7 @@ import type { ErrorLabel } from "~/utils/error";
 import { ShelfError, isLikeShelfError } from "~/utils/error";
 import { getCurrentSearchParams } from "~/utils/http.server";
 import { getParamsValues } from "~/utils/list";
+import { Logger } from "~/utils/logger";
 import { checkDomainSSOStatus, doesSSOUserExist } from "~/utils/sso.server";
 import { generateRandomCode, inviteEmailText, splitName } from "./helpers";
 import { processInvitationMessage } from "./message-validator.server";
@@ -123,6 +124,8 @@ export async function createInvite(
     teamMemberId?: Invite["teamMemberId"];
     userId: string;
     extraMessage?: string | null;
+    /** When set, accepting links the new user to this customer (CUSTOMER role). */
+    customerId?: string | null;
   }
 ) {
   let {
@@ -134,6 +137,7 @@ export async function createInvite(
     teamMemberId,
     userId,
     extraMessage,
+    customerId,
   } = payload;
 
   try {
@@ -251,6 +255,7 @@ export async function createInvite(
       expiresAt,
       inviteCode: generateRandomCode(6),
       ...(sanitizedMessage && { inviteMessage: sanitizedMessage }),
+      ...(customerId ? { customerId } : {}),
     };
 
     if (roles.length) {
@@ -361,6 +366,10 @@ export async function updateInviteStatus({
 
     const data = { status };
 
+    // User creation touches Supabase (an external, non-transactional service),
+    // so it must run before the DB transaction — we need the resulting user id
+    // to link the team member and invite.
+    let acceptedUserId: string | undefined;
     if (status === "ACCEPTED") {
       const { firstName, lastName } = splitName(invite.inviteeTeamMember.name);
 
@@ -373,6 +382,7 @@ export async function updateInviteStatus({
         lastName,
         createdWithInvite: true,
       });
+      acceptedUserId = user.id;
 
       Object.assign(data, {
         inviteeUser: {
@@ -381,39 +391,59 @@ export async function updateInviteStatus({
           },
         },
       });
-
-      await db.teamMember.update({
-        where: { id: invite.teamMemberId },
-        data: {
-          deletedAt: null,
-          user: { connect: { id: user.id } },
-          /**
-           * This handles a special case.
-           * If an invite is still pending, the team member is not yet linked to a user.
-           * However the admin is allowed to assign bookings to that team member.
-           * When the invite is accepted, we need to update all those bookings to also be linked to the user so they can see it on their bookings index.
-           */
-          bookings: {
-            updateMany: {
-              where: { custodianTeamMemberId: invite.teamMemberId },
-              data: { custodianUserId: user.id },
-            },
-          },
-        },
-      });
     }
 
-    const updatedInvite = await db.invite.update({ where: { id }, data });
+    // Link the team member, flip the invite status, and invalidate sibling
+    // invites atomically. Previously these were three independent writes: a
+    // failure between them left the user attached but the invite stuck in
+    // PENDING (re-acceptable) with siblings never invalidated.
+    const updatedInvite = await db.$transaction(async (tx) => {
+      if (status === "ACCEPTED" && acceptedUserId) {
+        await tx.teamMember.update({
+          where: { id: invite.teamMemberId },
+          data: {
+            deletedAt: null,
+            user: { connect: { id: acceptedUserId } },
+            /**
+             * This handles a special case.
+             * If an invite is still pending, the team member is not yet linked to a user.
+             * However the admin is allowed to assign bookings to that team member.
+             * When the invite is accepted, we need to update all those bookings to also be linked to the user so they can see it on their bookings index.
+             */
+            bookings: {
+              updateMany: {
+                where: { custodianTeamMemberId: invite.teamMemberId },
+                data: { custodianUserId: acceptedUserId },
+              },
+            },
+          },
+        });
 
-    //admin might have sent multiple invites(due to email spam or network issue, or just for fun etc) so we invalidate all of them if user rejects 1
-    //because user doesnt or want to join that org, so we should update all pending invite to show the same
-    await db.invite.updateMany({
-      where: {
-        status: InviteStatuses.PENDING,
-        inviteeEmail: invite.inviteeEmail,
-        organizationId: invite.organizationId,
-      },
-      data: { status: InviteStatuses.INVALIDATED },
+        // Link the accepted user to the customer as a contact when this is a
+        // CUSTOMER-role invite. This is the native provisioning path — it sets
+        // the tenancy key every downstream CUSTOMER-scope query relies on.
+        if (invite.customerId) {
+          await tx.user.update({
+            where: { id: acceptedUserId },
+            data: { fieldkitCustomerId: invite.customerId },
+          });
+        }
+      }
+
+      const updated = await tx.invite.update({ where: { id }, data });
+
+      //admin might have sent multiple invites(due to email spam or network issue, or just for fun etc) so we invalidate all of them if user rejects 1
+      //because user doesnt or want to join that org, so we should update all pending invite to show the same
+      await tx.invite.updateMany({
+        where: {
+          status: InviteStatuses.PENDING,
+          inviteeEmail: invite.inviteeEmail,
+          organizationId: invite.organizationId,
+        },
+        data: { status: InviteStatuses.INVALIDATED },
+      });
+
+      return updated;
     });
 
     return updatedInvite;
@@ -792,37 +822,76 @@ export async function bulkInviteUsers({
           positionInBatch * INVITE_EMAIL_SPACING_MS;
 
         setTimeout(async () => {
-          const token = jwt.sign({ id: invite.id }, INVITE_TOKEN_SECRET, {
-            expiresIn: `${INVITE_EXPIRY_TTL_DAYS}d`,
-          });
+          // This callback runs detached from the request (up to minutes
+          // later). An uncaught throw here becomes an unhandledRejection
+          // that can take down the whole process, so everything must stay
+          // inside the try/catch.
+          try {
+            const token = jwt.sign({ id: invite.id }, INVITE_TOKEN_SECRET, {
+              expiresIn: `${INVITE_EXPIRY_TTL_DAYS}d`,
+            });
 
-          const html = await invitationTemplateString({
-            invite,
-            token,
-            extraMessage: extraInviteMessage,
-          });
-
-          sendEmail({
-            to: invite.inviteeEmail,
-            subject: `✉️ You have been invited to ${invite.organization.name}`,
-            text: inviteEmailText({
+            const html = await invitationTemplateString({
               invite,
               token,
               extraMessage: extraInviteMessage,
-            }),
-            html,
-          });
+            });
+
+            sendEmail({
+              to: invite.inviteeEmail,
+              subject: `✉️ You have been invited to ${invite.organization.name}`,
+              text: inviteEmailText({
+                invite,
+                token,
+                extraMessage: extraInviteMessage,
+              }),
+              html,
+            });
+          } catch (cause) {
+            Logger.error(
+              new ShelfError({
+                cause,
+                message:
+                  "Failed to prepare or send a scheduled invite email. The invite row exists; the invitee just never received the email.",
+                additionalData: {
+                  inviteId: invite.id,
+                  inviteeEmail: invite.inviteeEmail,
+                },
+                label,
+              })
+            );
+          }
         }, delay);
       });
     };
 
     await db.$transaction(async (tx) => {
-      // Bulk create all required team members
+      // Only payloads without an existing team member need a fresh one. The
+      // display name is derived from the email local-part and is NOT unique
+      // (john@a.com and john@b.com both yield "john"), so we must never match
+      // created rows back by name — that would make two invites share one
+      // team member and orphan the other.
+      const payloadsNeedingTeamMember = validPayloadsWithName.filter(
+        (p) => !p.teamMemberId
+      );
+
+      // Bulk create the required team members. createManyAndReturn preserves
+      // input order, so the row at index i belongs to
+      // payloadsNeedingTeamMember[i]. We key the lookup by payload identity to
+      // stay correct even when names collide.
       const createdTeamMembers = await tx.teamMember.createManyAndReturn({
-        data: validPayloadsWithName.map((p) => ({
+        data: payloadsNeedingTeamMember.map((p) => ({
           name: p.name,
           organizationId,
         })),
+      });
+
+      const teamMemberIdByPayload = new Map<
+        InviteUserSchema & { name: string },
+        string
+      >();
+      payloadsNeedingTeamMember.forEach((payload, index) => {
+        teamMemberIdByPayload.set(payload, createdTeamMembers[index].id);
       });
 
       /**
@@ -833,15 +902,13 @@ export async function bulkInviteUsers({
           return payload.teamMemberId;
         }
 
-        const createdTm = createdTeamMembers.find(
-          (tm) => tm.name === payload.name
-        );
+        const createdTmId = teamMemberIdByPayload.get(payload);
         invariant(
-          createdTm,
+          createdTmId,
           "Unexpected situation! Could not find teamMember in createdTeamMembers."
         );
 
-        return createdTm.id;
+        return createdTmId;
       }
 
       const invitesToCreate = validPayloadsWithName.map((payload) => ({

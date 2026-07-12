@@ -19,10 +19,6 @@ import type { Prisma } from "@prisma/client";
 import { db } from "~/database/db.server";
 import { ShelfError } from "~/utils/error";
 
-// Re-exported so any callers still importing the formatters from this
-// module keep working. New code should import from './format' directly.
-export { centsToDollars, dollarsToCents } from "./format";
-
 const label = "Pricing" as const;
 
 /** Get the OrgPricing row, or null if none exists yet. */
@@ -30,9 +26,9 @@ export async function getOrgPricing(organizationId: string) {
   return db.orgPricing.findUnique({ where: { organizationId } });
 }
 
-/** Get the CustomerPricing row for a carbon customer, or null. */
-export async function getCustomerPricing(carbonCustomerId: string) {
-  return db.customerPricing.findUnique({ where: { carbonCustomerId } });
+/** Get the CustomerPricing row for a customer, or null. */
+export async function getCustomerPricing(customerId: string) {
+  return db.customerPricing.findUnique({ where: { customerId } });
 }
 
 /** Get the AssetPricing row for an asset, or null. */
@@ -83,11 +79,11 @@ export async function upsertOrgPricing(args: {
  * Upsert CustomerPricing. Same semantics as upsertOrgPricing —
  * undefined-leave-alone, null-clear, number/string-set. The
  * organization id is required on first create so we can scope the row;
- * subsequent updates use the carbonCustomerId PK alone.
+ * subsequent updates use the customerId PK alone.
  */
 export async function upsertCustomerPricing(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   patch: {
     storagePerDayCents?: number | null;
     pickCents?: number | null;
@@ -100,9 +96,9 @@ export async function upsertCustomerPricing(args: {
 }) {
   try {
     return await db.customerPricing.upsert({
-      where: { carbonCustomerId: args.carbonCustomerId },
+      where: { customerId: args.customerId },
       create: {
-        carbonCustomerId: args.carbonCustomerId,
+        customerId: args.customerId,
         organizationId: args.organizationId,
         ...args.patch,
       },

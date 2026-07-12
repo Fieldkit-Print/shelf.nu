@@ -49,7 +49,9 @@ export async function handleCheckoutCompleted(
     throw new ShelfError({
       cause: null,
       message: "No subscription ID found",
-      additionalData: { event },
+      // Only identifying fields — never the full event, which is serialized
+      // into client-facing error payloads.
+      additionalData: { eventId: event.id, eventType: event.type },
       label: "Stripe webhook",
       status: 500,
     });

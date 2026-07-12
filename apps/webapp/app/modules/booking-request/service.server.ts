@@ -75,16 +75,16 @@ function buildEmailContext(
 }
 
 /**
- * Find users at the same Carbon customer who can act as internal approvers
+ * Find users at the same customer who can act as internal approvers
  * (CustomerContactPermission.canApproveBookings = true). Returns just their
  * emails — the caller doesn't need the full user record.
  */
 async function findInternalApproverEmails(
-  carbonCustomerId: string
+  customerId: string
 ): Promise<string[]> {
   const approvers = await db.user.findMany({
     where: {
-      carbonCustomerId,
+      fieldkitCustomerId: customerId,
       customerContactPermission: { canApproveBookings: true },
       deletedAt: null,
     },
@@ -101,28 +101,29 @@ const label = "BookingRequest" as const;
  *
  * The requester is the currently-authenticated user; tenancy is enforced by
  * the caller (which must have already passed `requirePermission` with the
- * CUSTOMER role and a non-null carbonCustomerId on the perm context).
+ * CUSTOMER role and a non-null customerId on the perm context).
  *
- * @param args - { organizationId, carbonCustomerId, requesterId, input }
+ * @param args - { organizationId, customerId, requesterId, input }
  * @returns The created BookingRequest row
  * @throws {ShelfError} on db failure
  */
 export async function submitBookingRequest(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   requesterId: User["id"];
   input: SubmitBookingRequestInput;
 }): Promise<BookingRequest> {
-  const { organizationId, carbonCustomerId, requesterId, input } = args;
+  const { organizationId, customerId, requesterId, input } = args;
 
   try {
     const { request, requester, requiresInternal } = await db.$transaction(
       async (tx) => {
-        // Resolve approval routing. Default (no row) is "no internal approval".
-        const setting = await tx.customerSetting.findUnique({
-          where: { carbonCustomerId },
+        // Resolve approval routing from the customer's setting.
+        const customer = await tx.customer.findUnique({
+          where: { id: customerId },
+          select: { requiresInternalApproval: true },
         });
-        const requiresInternal = setting?.requiresInternalApproval ?? false;
+        const requiresInternal = customer?.requiresInternalApproval ?? false;
 
         const initialStatus = requiresInternal
           ? BookingRequestStatus.PENDING_INTERNAL
@@ -131,7 +132,7 @@ export async function submitBookingRequest(args: {
         const created = await tx.bookingRequest.create({
           data: {
             organizationId,
-            carbonCustomerId,
+            customerId,
             requesterId,
             status: initialStatus,
             proposedFrom: input.proposedFrom,
@@ -192,7 +193,7 @@ export async function submitBookingRequest(args: {
       kitCount: input.kitIds.length,
     });
     if (requiresInternal) {
-      const approvers = await findInternalApproverEmails(carbonCustomerId);
+      const approvers = await findInternalApproverEmails(customerId);
       void sendBookingRequestSubmittedEmail({
         to: approvers,
         context: ctx,
@@ -212,7 +213,7 @@ export async function submitBookingRequest(args: {
       cause,
       label,
       message: "Failed to submit booking request.",
-      additionalData: { organizationId, carbonCustomerId, requesterId },
+      additionalData: { organizationId, customerId, requesterId },
     });
   }
 }
@@ -221,7 +222,7 @@ export async function submitBookingRequest(args: {
  * Internal customer-side approval. Transitions PENDING_INTERNAL →
  * PENDING_FIELDKIT. The approver must hold
  * `CustomerContactPermission.canApproveBookings = true` AND be at the same
- * Carbon customer as the request — both checks are the caller's responsibility
+ * customer as the request — both checks are the caller's responsibility
  * (route loader / action), this function only enforces state-machine validity.
  *
  * @throws {ShelfError} if the request is not in PENDING_INTERNAL
@@ -621,7 +622,7 @@ export async function cancelBookingRequest(args: {
 
 /**
  * Fetch a single BookingRequest. Caller is responsible for tenancy
- * enforcement (compare `request.carbonCustomerId` to `perm.carbonCustomerId`
+ * enforcement (compare `request.customerId` to `perm.customerId`
  * for CUSTOMER role users) — this function only loads the row.
  *
  * Generic over the include parameter so the return type narrows to the
@@ -654,16 +655,16 @@ export async function getBookingRequest<
 
 /**
  * List booking requests for either:
- *   - a CUSTOMER user (pass `carbonCustomerId`, optionally restrict to their
+ *   - a CUSTOMER user (pass `customerId`, optionally restrict to their
  *     own requests via `requesterId`) — they see their customer's requests
- *   - Fieldkit staff (omit `carbonCustomerId`) — they see all PENDING_FIELDKIT
+ *   - Fieldkit staff (omit `customerId`) — they see all PENDING_FIELDKIT
  *     org-wide, plus historical APPROVED/REJECTED when `statuses` is widened
  */
 export async function listBookingRequests<
   TInclude extends Prisma.BookingRequestInclude | undefined,
 >(args: {
   organizationId: string;
-  carbonCustomerId?: string;
+  customerId?: string;
   requesterId?: User["id"];
   statuses?: BookingRequestStatus[];
   page?: number;
@@ -677,7 +678,7 @@ export async function listBookingRequests<
 }> {
   const {
     organizationId,
-    carbonCustomerId,
+    customerId,
     requesterId,
     statuses,
     page = 1,
@@ -687,7 +688,7 @@ export async function listBookingRequests<
 
   const where: Prisma.BookingRequestWhereInput = {
     organizationId,
-    ...(carbonCustomerId ? { carbonCustomerId } : {}),
+    ...(customerId ? { customerId } : {}),
     ...(requesterId ? { requesterId } : {}),
     ...(statuses?.length ? { status: { in: statuses } } : {}),
   };

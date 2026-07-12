@@ -5,9 +5,8 @@
  * emit one STORAGE billable event per day. Idempotent — running twice on
  * the same day is a no-op (UNIQUE index on idempotencyKey).
  *
- * Pricing resolves via the Shelf-owned three-tier hierarchy (asset →
- * customer → org); see resolver.server.ts. The original design pulled
- * pricing from a Carbon FDW view that never landed.
+ * Pricing resolves via the three-tier hierarchy (asset → customer → org);
+ * see resolver.server.ts.
  *
  * @see {@link file://./events.server.ts}                 Event-emit helpers
  * @see {@link file://./../pricing/resolver.server.ts}    Pricing hierarchy
@@ -37,8 +36,8 @@ function utcDay(date: Date = new Date(Date.now() - 24 * 60 * 60 * 1000)): Date {
  * Runs the storage billing pass for one day. Emits one STORAGE
  * BillableEvent per customer-owned asset currently in storage.
  *
- * Storage pricing is intentionally null until Carbon ships the
- * `warehousePrice` table — see `CONTRACT_VIEWS_CARBON.sql`.
+ * Storage pricing resolves from the pricing hierarchy; assets with no rate
+ * at any tier are skipped (no BillableEvent written).
  */
 export async function runDailyStorageBilling(opts?: { day?: Date }) {
   if (!FIELDKIT_PRIMARY_ORGANIZATION_ID) {
@@ -46,25 +45,27 @@ export async function runDailyStorageBilling(opts?: { day?: Date }) {
       cause: null,
       message:
         "FIELDKIT_PRIMARY_ORGANIZATION_ID is not set; cannot bill storage.",
-      label: "Carbon Sync",
+      label: "Billing",
     });
   }
 
   const day = utcDay(opts?.day);
 
-  // Find every Asset that's customer-owned (carbonCustomerId set). We
-  // bill regardless of `status` — a customer's asset sitting in CHECKED_OUT
-  // status still occupies a slot until it physically leaves the building,
-  // which is captured by location state, not asset status.
+  // Find every Asset that's customer-owned (customerId set) AND currently
+  // occupying a storage slot (has a location). We bill regardless of `status`
+  // — a customer's asset sitting in CHECKED_OUT status still occupies a slot
+  // until it physically leaves the building, which is captured by location
+  // state, not asset status. An asset with no location has left storage, so
+  // it must NOT be billed.
   const assets = await db.asset.findMany({
     where: {
       organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
-      carbonCustomerId: { not: null },
+      customerId: { not: null },
+      locationId: { not: null },
     },
     select: {
       id: true,
-      carbonCustomerId: true,
-      carbonPartId: true,
+      customerId: true,
       locationId: true,
     },
   });
@@ -78,22 +79,21 @@ export async function runDailyStorageBilling(opts?: { day?: Date }) {
   });
 
   for (const a of assets) {
-    if (!a.carbonCustomerId) continue;
+    if (!a.customerId) continue;
     try {
       // Resolve the storage rate at write time. The asset tier wins,
       // then customer, then org. Null = no rate at any tier → skip.
       const resolved = await resolveFlatRateCents({
         organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
-        carbonCustomerId: a.carbonCustomerId,
+        customerId: a.customerId,
         assetId: a.id,
         kind: "STORAGE",
       });
       if (!resolved) continue;
       await recordStorageDay({
         organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
-        carbonCustomerId: a.carbonCustomerId,
+        customerId: a.customerId,
         assetId: a.id,
-        carbonPartId: a.carbonPartId,
         locationId: a.locationId,
         day,
         amountCents: resolved.amountCents,
@@ -126,9 +126,8 @@ export async function runDailyStorageBilling(opts?: { day?: Date }) {
  * RESERVED / ONGOING / OVERDUE) overlapping the billing day, and emits
  * one RENTAL_USE BillableEvent per (booking, asset, day).
  *
- * The customer billed is the booking creator's carbonCustomerId. Bookings
- * whose creator has no carbonCustomerId (Fieldkit-internal bookings) are
- * skipped.
+ * The customer billed is the booking creator's linked customer. Bookings
+ * whose creator has no linked customer (internal bookings) are skipped.
  *
  * Idempotency key: `("rental-use", bookingId, assetId, dayIso)` — running
  * twice on the same day or across overlapping cron triggers is safe.
@@ -157,15 +156,15 @@ export async function runDailyRentalUseBilling(opts?: { day?: Date }) {
       from: { lte: dayEnd },
       to: { gte: dayStart },
       assets: {
-        some: { carbonCustomerId: null, rentable: true },
+        some: { customerId: null, rentable: true },
       },
     },
     select: {
       id: true,
-      creator: { select: { carbonCustomerId: true } },
+      creator: { select: { fieldkitCustomerId: true } },
       assets: {
-        where: { carbonCustomerId: null, rentable: true },
-        select: { id: true, carbonPartId: true },
+        where: { customerId: null, rentable: true },
+        select: { id: true },
       },
     },
   });
@@ -179,24 +178,23 @@ export async function runDailyRentalUseBilling(opts?: { day?: Date }) {
   });
 
   for (const booking of bookings) {
-    const carbonCustomerId = booking.creator?.carbonCustomerId;
-    // Internal Fieldkit bookings have no customer to bill — skip.
-    if (!carbonCustomerId) continue;
+    const customerId = booking.creator?.fieldkitCustomerId;
+    // Internal bookings have no customer to bill — skip.
+    if (!customerId) continue;
 
     for (const asset of booking.assets) {
       try {
         const resolved = await resolveFlatRateCents({
           organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
-          carbonCustomerId,
+          customerId,
           assetId: asset.id,
           kind: "RENTAL_USE",
         });
         if (!resolved) continue;
         await recordRentalUseDay({
           organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
-          carbonCustomerId,
+          customerId,
           assetId: asset.id,
-          carbonPartId: asset.carbonPartId,
           bookingId: booking.id,
           day,
           amountCents: resolved.amountCents,

@@ -21,7 +21,7 @@ export const submitBookingRequestSchema = z
     assetIds: z.array(z.string()).default([]),
     kitIds: z.array(z.string()).default([]),
     // Structured ship-to. All optional — empty fields fall back to the
-    // customer's default location pulled from Carbon at order-export time.
+    // customer's default ship-to address at order-export time.
     shipToName: z.string().trim().max(200).optional(),
     shipToPhone: z.string().trim().max(50).optional(),
     shipToLine1: z.string().trim().max(200).optional(),

@@ -75,6 +75,9 @@ export const auditTrialEndsSoonEmailText = ({
   trialEndDate: Date;
 }) => {
   const dateStr = trialEndDate.toLocaleDateString("en-US", {
+    // Format against UTC so the rendered calendar date matches the stored
+    // trial-end instant regardless of the server's local timezone.
+    timeZone: "UTC",
     month: "long",
     day: "numeric",
     year: "numeric",
@@ -121,6 +124,9 @@ function AuditTrialEndsSoonEmailTemplate({
   const { emailPrimaryColor } = config;
 
   const dateStr = trialEndDate.toLocaleDateString("en-US", {
+    // Format against UTC so the rendered calendar date matches the stored
+    // trial-end instant regardless of the server's local timezone.
+    timeZone: "UTC",
     month: "long",
     day: "numeric",
     year: "numeric",

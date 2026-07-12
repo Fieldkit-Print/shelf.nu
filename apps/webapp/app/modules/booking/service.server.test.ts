@@ -71,6 +71,9 @@ vitest.mock("~/database/db.server", () => ({
           : Promise.all(callbackOrArray)
       ),
     $executeRaw: vitest.fn().mockResolvedValue(0),
+    // why: reserve/checkout lock the involved asset rows via a raw
+    // `SELECT ... FOR UPDATE`; the query result is not used, only its side effect.
+    $queryRaw: vitest.fn().mockResolvedValue([]),
     booking: {
       create: vitest.fn().mockResolvedValue({}),
       update: vitest.fn().mockResolvedValue({}),
@@ -113,6 +116,13 @@ vitest.mock("~/database/db.server", () => ({
       findMany: vitest
         .fn()
         .mockResolvedValue([{ name: "Tag 1" }, { name: "Tag 2" }]),
+      // why: booking tag writes verify every tag belongs to the org via a
+      // count; return the number of ids queried so valid tags pass the check.
+      count: vitest
+        .fn()
+        .mockImplementation((args) =>
+          Promise.resolve(args?.where?.id?.in?.length ?? 0)
+        ),
     },
     teamMember: {
       findUnique: vitest.fn().mockResolvedValue(null),

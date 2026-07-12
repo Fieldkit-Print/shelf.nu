@@ -2,7 +2,7 @@
  * Booking requests — list view.
  *
  * Audience-aware:
- *   - CUSTOMER users see all requests under their `carbonCustomerId` (their
+ *   - CUSTOMER users see all requests under their `customerId` (their
  *     own + their colleagues' if they have any).
  *   - Fieldkit staff (non-CUSTOMER) see all requests in the org. The most
  *     useful queue is PENDING_FIELDKIT; we surface it via a status tab.
@@ -90,15 +90,15 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       entity: PermissionEntity.booking,
       action: PermissionAction.read,
     });
-    const { organizationId, isCustomer, carbonCustomerId } = perm;
+    const { organizationId, isCustomer, customerId } = perm;
 
     const url = new URL(request.url);
     const tab = parseStatusTab(url.searchParams.get("status"));
 
     const result = await listBookingRequests({
       organizationId,
-      // CUSTOMER: scope to their carbonCustomerId. Fieldkit staff: org-wide.
-      ...(isCustomer && carbonCustomerId ? { carbonCustomerId } : {}),
+      // CUSTOMER: scope to their customerId. Fieldkit staff: org-wide.
+      ...(isCustomer && customerId ? { customerId } : {}),
       statuses: statusesForTab(tab),
       include: {
         requester: {

@@ -128,7 +128,7 @@ const mockKitData = {
   imageExpiration: null,
   createdAt: new Date(),
   updatedAt: new Date(),
-  carbonCustomerId: null,
+  customerId: null,
   rentable: false,
 };
 
@@ -492,7 +492,7 @@ describe("getKit", () => {
 
     expect(db.kit.findFirstOrThrow).toHaveBeenCalledWith({
       where: {
-        OR: [{ id: "kit-1", organizationId: "org-1" }],
+        AND: [{ OR: [{ id: "kit-1", organizationId: "org-1" }] }],
       },
       include: expect.any(Object),
     });

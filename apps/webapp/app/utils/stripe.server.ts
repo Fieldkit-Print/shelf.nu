@@ -311,7 +311,9 @@ export async function getOrCreateCustomerId(
     throw new ShelfError({
       cause: null,
       message: "No customer ID found for user",
-      additionalData: { user },
+      // Only the id — never the full user row, which is serialized into
+      // client-facing error payloads.
+      additionalData: { userId: user.id },
       label: "Subscription",
     });
   }
@@ -528,7 +530,9 @@ export async function getDataFromStripeEvent(event: Stripe.Event) {
     throw new ShelfError({
       cause,
       message: "Something went wrong while fetching data from Stripe event",
-      additionalData: { event },
+      // Only identifying fields — never the full event, which is serialized
+      // into client-facing error payloads.
+      additionalData: { eventId: event.id, eventType: event.type },
       label,
       status: 500,
     });
@@ -801,6 +805,9 @@ export async function getInvoiceNotificationData({
   }).format(invoice.amount_due / 100);
   const dueDate = invoice.due_date
     ? new Date(invoice.due_date * 1000).toLocaleDateString("en-US", {
+        // Format against UTC so the rendered due date is stable regardless
+        // of the server's local timezone.
+        timeZone: "UTC",
         year: "numeric",
         month: "long",
         day: "numeric",

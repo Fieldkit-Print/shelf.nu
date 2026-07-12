@@ -3,8 +3,63 @@ import * as Sentry from "@sentry/react-router";
 import { type Event, type EventHint } from "@sentry/react-router";
 
 import { SENTRY_DSN } from "~/utils/env";
-import type { ShelfError } from "~/utils/error";
-import { isAbortError, isLikeShelfError } from "~/utils/error";
+import { isAbortError, isLikeShelfError, ShelfError } from "~/utils/error";
+import { Logger } from "~/utils/logger";
+
+/**
+ * Process-level safety net for errors that escape every request-scoped
+ * handler: rejected promises from detached async work (timers, queue
+ * side-effects) and synchronous throws outside a request. Node's default
+ * for both is to terminate the process — which is exactly how the pg-boss
+ * "Connection terminated unexpectedly" incident took production down on
+ * 2026-07-10. Sentry's handleError only covers loaders/actions/render,
+ * so without these hooks any background rejection is fatal.
+ *
+ * We log-and-survive rather than exit: the platform (Render) restarts on
+ * a real crash anyway, so exiting here would only drop in-flight requests
+ * for error classes that are almost always recoverable (dropped DB
+ * connections, email render failures). The guard keeps HMR in dev from
+ * stacking duplicate listeners.
+ */
+declare global {
+  var __processErrorHandlersInstalled: boolean | undefined;
+}
+if (!global.__processErrorHandlersInstalled) {
+  global.__processErrorHandlersInstalled = true;
+
+  process.on("unhandledRejection", (reason) => {
+    try {
+      Logger.error(
+        new ShelfError({
+          cause: reason,
+          message:
+            "Unhandled promise rejection reached the process level. The error escaped all request/worker handlers — find and fix the missing catch.",
+          label: "Scheduler",
+        })
+      );
+    } catch {
+      // Never let the safety net itself crash the process.
+      // eslint-disable-next-line no-console
+      console.error("unhandledRejection (logger failed):", reason);
+    }
+  });
+
+  process.on("uncaughtException", (error) => {
+    try {
+      Logger.error(
+        new ShelfError({
+          cause: error,
+          message:
+            "Uncaught exception reached the process level. The process is kept alive, but state may be inconsistent — investigate promptly.",
+          label: "Scheduler",
+        })
+      );
+    } catch {
+      // eslint-disable-next-line no-console
+      console.error("uncaughtException (logger failed):", error);
+    }
+  });
+}
 
 if (SENTRY_DSN) {
   Sentry.init({

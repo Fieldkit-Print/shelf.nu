@@ -4275,6 +4275,26 @@ export async function bulkAssignAssetTags({
       return true;
     }
 
+    // Tenancy: when connecting, verify every tag belongs to this organization.
+    // Connecting purely by `{ id }` would otherwise let a crafted request
+    // attach another org's tag to assets in this org.
+    if (!remove && tagsIds.length > 0) {
+      const validTagCount = await db.tag.count({
+        where: { id: { in: tagsIds }, organizationId },
+      });
+      if (validTagCount !== tagsIds.length) {
+        throw new ShelfError({
+          cause: null,
+          message:
+            "Some of the selected tags don't exist in this workspace. Please refresh and try again.",
+          additionalData: { organizationId },
+          label: "Assets",
+          status: 400,
+          shouldBeCaptured: false,
+        });
+      }
+    }
+
     const loadUserForNotes = createLoadUserForNotes(userId);
 
     const previousTagsByAssetId = await db.asset

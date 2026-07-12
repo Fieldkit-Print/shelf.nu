@@ -91,7 +91,7 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       entity: PermissionEntity.booking,
       action: PermissionAction.read,
     });
-    const { isCustomer, carbonCustomerId } = perm;
+    const { isCustomer, customerId } = perm;
 
     const bookingRequest = await getBookingRequest(id, {
       include: {
@@ -117,7 +117,7 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
     });
 
     // Tenancy: CUSTOMER callers must match the request's customer.
-    if (isCustomer && bookingRequest.carbonCustomerId !== carbonCustomerId) {
+    if (isCustomer && bookingRequest.customerId !== customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",

@@ -249,6 +249,47 @@ export type DataResponse<T extends ResponsePayload = ResponsePayload> =
  * @param cause - The error that has been catch
  * @returns The normalized error with `error` key set to the error
  */
+/**
+ * Top-level `additionalData` keys that must never be serialized into the
+ * client-facing error payload. Call sites occasionally attach whole domain
+ * objects here for server-side logging (e.g. a full `user` row or a raw
+ * Stripe `event`); those carry PII/secrets and the browser never needs them.
+ * The full object is still captured in the server log via `Logger.error`.
+ */
+const SENSITIVE_ADDITIONAL_DATA_KEYS = new Set([
+  "user",
+  "event",
+  "password",
+  "secret",
+  "token",
+  "apiKey",
+]);
+
+/**
+ * Strips sensitive top-level keys from an `additionalData` object before it is
+ * returned to the client. Shallow by design — nested redaction would be
+ * fragile and the sensitive leaks we guard against are whole objects placed at
+ * the top level.
+ *
+ * @param additionalData - The error's additionalData (may be undefined).
+ * @returns A shallow copy with sensitive keys removed, or the original value
+ *   when there is nothing to redact.
+ */
+function redactAdditionalData(
+  additionalData: ShelfError["additionalData"]
+): ShelfError["additionalData"] {
+  if (!additionalData || typeof additionalData !== "object") {
+    return additionalData;
+  }
+  const entries = Object.entries(additionalData).filter(
+    ([key]) => !SENSITIVE_ADDITIONAL_DATA_KEYS.has(key)
+  );
+  if (entries.length === Object.keys(additionalData).length) {
+    return additionalData;
+  }
+  return Object.fromEntries(entries);
+}
+
 export function error(cause: ShelfError, shouldSendNotification = true) {
   if (cause.label !== "Request aborted") {
     Logger.error(cause);
@@ -274,7 +315,7 @@ export function error(cause: ShelfError, shouldSendNotification = true) {
       label: cause.label,
       ...(cause.title && { title: cause.title }),
       ...(cause.additionalData && {
-        additionalData: cause.additionalData,
+        additionalData: redactAdditionalData(cause.additionalData),
       }),
       ...(cause.traceId && { traceId: cause.traceId }),
     },

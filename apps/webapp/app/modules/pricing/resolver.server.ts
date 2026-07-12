@@ -74,11 +74,11 @@ const KIND_TO_COLUMN: Record<
  */
 export async function resolveFlatRateCents(args: {
   organizationId: string;
-  carbonCustomerId?: string | null;
+  customerId?: string | null;
   assetId?: string | null;
   kind: FlatRateKind;
 }): Promise<ResolvedRate | null> {
-  const { organizationId, carbonCustomerId, assetId, kind } = args;
+  const { organizationId, customerId, assetId, kind } = args;
   const column = KIND_TO_COLUMN[kind];
 
   // Asset tier only carries storage + rental rates.
@@ -89,8 +89,8 @@ export async function resolveFlatRateCents(args: {
     assetTierApplicable
       ? db.assetPricing.findUnique({ where: { assetId } })
       : Promise.resolve(null),
-    carbonCustomerId
-      ? db.customerPricing.findUnique({ where: { carbonCustomerId } })
+    customerId
+      ? db.customerPricing.findUnique({ where: { customerId } })
       : Promise.resolve(null),
     db.orgPricing.findUnique({ where: { organizationId } }),
   ]);
@@ -145,11 +145,11 @@ export async function resolveFlatRateCents(args: {
  */
 export async function resolveRentalLossMultiplier(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
 }): Promise<{ multiplier: Prisma.Decimal; source: "customer" | "org" } | null> {
   const [customer, org] = await Promise.all([
     db.customerPricing.findUnique({
-      where: { carbonCustomerId: args.carbonCustomerId },
+      where: { customerId: args.customerId },
     }),
     db.orgPricing.findUnique({
       where: { organizationId: args.organizationId },
@@ -177,11 +177,11 @@ export async function resolveRentalLossMultiplier(args: {
  */
 export async function resolveConsumableMarkupPct(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
 }): Promise<{ markupPct: Prisma.Decimal; source: "customer" | "org" } | null> {
   const [customer, org] = await Promise.all([
     db.customerPricing.findUnique({
-      where: { carbonCustomerId: args.carbonCustomerId },
+      where: { customerId: args.customerId },
     }),
     db.orgPricing.findUnique({
       where: { organizationId: args.organizationId },
@@ -210,12 +210,12 @@ export async function resolveConsumableMarkupPct(args: {
  */
 export async function resolveCurrencyCode(args: {
   organizationId: string;
-  carbonCustomerId?: string | null;
+  customerId?: string | null;
 }): Promise<string> {
   const [customer, org] = await Promise.all([
-    args.carbonCustomerId
+    args.customerId
       ? db.customerPricing.findUnique({
-          where: { carbonCustomerId: args.carbonCustomerId },
+          where: { customerId: args.customerId },
         })
       : Promise.resolve(null),
     db.orgPricing.findUnique({

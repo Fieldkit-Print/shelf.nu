@@ -112,7 +112,7 @@ describe("manage-kits route validation", () => {
       organizationId: "org123",
       isSelfServiceOrBase: false,
       isCustomer: false,
-      carbonCustomerId: null,
+      customerId: null,
       customerContactPermission: null,
       organizations: [],
       currentOrganization: {} as any,

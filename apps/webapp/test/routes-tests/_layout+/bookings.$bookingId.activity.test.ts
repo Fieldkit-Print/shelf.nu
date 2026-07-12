@@ -97,7 +97,7 @@ describe("bookings.$bookingId.activity action — organization scoping", () => {
       organizationId: "org-attacker",
       isSelfServiceOrBase: false,
       isCustomer: false,
-      carbonCustomerId: null,
+      customerId: null,
       customerContactPermission: null,
       organizations: [],
       currentOrganization: {} as any,

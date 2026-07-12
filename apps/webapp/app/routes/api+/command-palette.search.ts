@@ -157,7 +157,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
     const isPersonalWorkspace = isPersonalOrg(currentOrganization);
 
     // Check permissions for different entity types based on actual roles.
-    // CUSTOMER role gets kit + booking search scoped to their carbonCustomerId.
+    // CUSTOMER role gets kit + booking search scoped to their customerId.
     // Locations, audits, team members are internal Fieldkit surfaces and
     // are never returned to CUSTOMER users.
     const hasKitPermission = ["OWNER", "ADMIN"].includes(role) || isCustomer;

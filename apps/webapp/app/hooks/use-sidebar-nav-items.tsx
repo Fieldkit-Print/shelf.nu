@@ -196,8 +196,8 @@ export function useSidebarNavItems() {
       type: "child",
       title: "Customers",
       Icon: UsersRoundIcon,
-      // Fieldkit-only admin surface (PR5). Staff manage Carbon-synced
-      // customers + their contacts here. Hidden from base/self-service/customer.
+      // Admin surface. Staff manage customers + their contacts here.
+      // Hidden from base/self-service/customer.
       hidden: isRestrictedRole,
       to: "/customers",
     },

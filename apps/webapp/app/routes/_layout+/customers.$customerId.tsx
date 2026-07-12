@@ -1,18 +1,18 @@
 /**
- * Customers Admin — Detail (FDW edition)
+ * Customers Admin — Detail
  *
- * Shows a single Carbon customer (read live from Carbon's REST API) with
- * its contact list (joined with provisioned Shelf Users). Each contact row
- * exposes the granular `CustomerContactPermission` toggles via an inline
- * form that POSTs back to this route.
+ * Shows a single customer (Shelf-native) with its contact list (CUSTOMER-role
+ * Users). Each contact row exposes the granular `CustomerContactPermission`
+ * toggles via an inline form that POSTs back to this route. Admins can also
+ * edit the customer's details, approval setting, and pricing overrides here.
  *
- * Permissions: ADMIN/OWNER only. Customer master data (name) is read-only —
- * Carbon owns it.
+ * Permissions: ADMIN/OWNER only.
  *
  * @see {@link file://./customers._index.tsx} List
  * @see {@link file://./../../modules/customer/service.server.ts} Data layer
  */
 
+import { OrganizationRoles } from "@prisma/client";
 import type {
   ActionFunctionArgs,
   LoaderFunctionArgs,
@@ -31,8 +31,10 @@ import type { CustomerDetail } from "~/modules/customer/service.server";
 import {
   getCustomerDetail,
   updateContactPermissions,
-  upsertCustomerSetting,
+  updateCustomer,
 } from "~/modules/customer/service.server";
+
+import { createInvite } from "~/modules/invite/service.server";
 import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
 import {
   getCustomerPricing,
@@ -52,9 +54,15 @@ const ParamSchema = z.object({ customerId: z.string() });
 
 const IntentSchema = z.enum([
   "contact-permission",
-  "customer-setting",
+  "customer-details",
   "customer-pricing",
+  "invite-contact",
 ]);
+
+const InviteContactSchema = z.object({
+  intent: z.literal("invite-contact"),
+  email: z.string().trim().email("A valid email is required"),
+});
 
 const PermissionPatchSchema = z.object({
   intent: z.literal("contact-permission"),
@@ -67,9 +75,19 @@ const PermissionPatchSchema = z.object({
   canApproveBookings: z.coerce.boolean().optional(),
 });
 
-const CustomerSettingPatchSchema = z.object({
-  intent: z.literal("customer-setting"),
+const CustomerDetailsPatchSchema = z.object({
+  intent: z.literal("customer-details"),
+  name: z.string().trim().min(1, "Name is required"),
+  billingEmail: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
   requiresInternalApproval: z.coerce.boolean().optional(),
+  shipToName: z.string().trim().optional(),
+  shipToStreet1: z.string().trim().optional(),
+  shipToStreet2: z.string().trim().optional(),
+  shipToCity: z.string().trim().optional(),
+  shipToState: z.string().trim().optional(),
+  shipToPostalCode: z.string().trim().optional(),
+  shipToCountry: z.string().trim().optional(),
 });
 
 /**
@@ -96,8 +114,7 @@ const CustomerPricingPatchSchema = z.object({
 export async function loader({ context, request, params }: LoaderFunctionArgs) {
   const authSession = context.getSession();
   const { userId } = authSession;
-  // URL param is the Carbon customer id (text, the canonical reference).
-  const { customerId: carbonCustomerId } = getParams(params, ParamSchema, {
+  const { customerId } = getParams(params, ParamSchema, {
     additionalData: { userId },
   });
 
@@ -110,18 +127,17 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
     });
 
     const [customer, pricing] = await Promise.all([
-      getCustomerDetail({ organizationId, carbonCustomerId }),
-      getCustomerPricing(carbonCustomerId),
+      getCustomerDetail({ organizationId, customerId }),
+      getCustomerPricing(customerId),
     ]);
 
     const header: HeaderData = {
       title: customer.displayName,
-      subHeading: `Carbon id: ${customer.id}`,
     };
 
     return { header, customer, pricing };
   } catch (cause) {
-    const reason = makeShelfError(cause, { userId, carbonCustomerId });
+    const reason = makeShelfError(cause, { userId, customerId });
     throw data(error(reason), { status: reason.status });
   }
 }
@@ -137,7 +153,7 @@ export const handle = {
 export async function action({ context, request, params }: ActionFunctionArgs) {
   const authSession = context.getSession();
   const { userId } = authSession;
-  const { customerId: carbonCustomerId } = getParams(params, ParamSchema, {
+  const { customerId } = getParams(params, ParamSchema, {
     additionalData: { userId },
   });
 
@@ -151,17 +167,17 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 
     const formData = await request.formData();
     const { intent } = parseData(formData, z.object({ intent: IntentSchema }), {
-      additionalData: { carbonCustomerId },
+      additionalData: { customerId },
     });
 
     if (intent === "contact-permission") {
       const payload = parseData(formData, PermissionPatchSchema, {
-        additionalData: { carbonCustomerId },
+        additionalData: { customerId },
       });
 
       await updateContactPermissions({
         organizationId,
-        carbonCustomerId,
+        customerId,
         contactUserId: payload.contactUserId,
         patch: {
           canRequestShipment: payload.canRequestShipment ?? false,
@@ -179,28 +195,38 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         icon: { name: "success", variant: "success" },
         senderId: userId,
       });
-    } else if (intent === "customer-setting") {
-      const payload = parseData(formData, CustomerSettingPatchSchema, {
-        additionalData: { carbonCustomerId },
+    } else if (intent === "customer-details") {
+      const payload = parseData(formData, CustomerDetailsPatchSchema, {
+        additionalData: { customerId },
       });
 
-      await upsertCustomerSetting({
+      await updateCustomer({
         organizationId,
-        carbonCustomerId,
+        customerId,
         patch: {
+          name: payload.name,
+          billingEmail: payload.billingEmail || null,
+          notes: payload.notes || null,
           requiresInternalApproval: payload.requiresInternalApproval ?? false,
+          shipToName: payload.shipToName || null,
+          shipToStreet1: payload.shipToStreet1 || null,
+          shipToStreet2: payload.shipToStreet2 || null,
+          shipToCity: payload.shipToCity || null,
+          shipToState: payload.shipToState || null,
+          shipToPostalCode: payload.shipToPostalCode || null,
+          shipToCountry: payload.shipToCountry || null,
         },
       });
 
       sendNotification({
-        title: "Settings updated",
-        message: "Customer approval settings saved.",
+        title: "Customer updated",
+        message: "Customer details saved.",
         icon: { name: "success", variant: "success" },
         senderId: userId,
       });
     } else if (intent === "customer-pricing") {
       const payload = parseData(formData, CustomerPricingPatchSchema, {
-        additionalData: { carbonCustomerId },
+        additionalData: { customerId },
       });
 
       // Empty string for a decimal field means "clear the override" (null in DB);
@@ -216,7 +242,7 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
 
       await upsertCustomerPricing({
         organizationId,
-        carbonCustomerId,
+        customerId,
         patch: {
           storagePerDayCents: dollarsToCents(payload.storagePerDayDollars),
           pickCents: dollarsToCents(payload.pickDollars),
@@ -234,64 +260,143 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         icon: { name: "success", variant: "success" },
         senderId: userId,
       });
+    } else if (intent === "invite-contact") {
+      const payload = parseData(formData, InviteContactSchema, {
+        additionalData: { customerId },
+      });
+
+      // Provision a CUSTOMER-role contact linked to this customer. The team
+      // member name defaults to the email local-part; accepting the invite
+      // sets User.fieldkitCustomerId (see createInvite / updateInviteStatus).
+      await createInvite({
+        organizationId,
+        inviteeEmail: payload.email,
+        inviterId: userId,
+        userId,
+        roles: [OrganizationRoles.CUSTOMER],
+        teamMemberName: payload.email.split("@")[0],
+        customerId,
+      });
+
+      sendNotification({
+        title: "Invite sent",
+        message: `An invite was sent to ${payload.email}.`,
+        icon: { name: "success", variant: "success" },
+        senderId: userId,
+      });
     }
 
     return { success: true } as const;
   } catch (cause) {
-    const reason = makeShelfError(cause, { userId, carbonCustomerId });
+    const reason = makeShelfError(cause, { userId, customerId });
     return data(error(reason), { status: reason.status });
   }
 }
 
 export default function CustomerDetailPage() {
   const { customer, pricing } = useLoaderData<typeof loader>();
-  const { contacts, assets, setting } = customer;
-  const requiresInternalApproval = setting?.requiresInternalApproval ?? false;
+  const { contacts, assets } = customer;
 
   return (
     <div className="relative">
       <Header />
       <div className="my-4 space-y-6">
-        {/* Customer-level approval flow toggle */}
+        {/* Customer details + approval flow toggle */}
         <div className="rounded border border-gray-200 bg-white">
           <div className="border-b border-gray-100 px-4 py-3 md:px-6">
             <h3 className="text-sm font-semibold text-gray-900">
-              Approval settings
+              Customer details
             </h3>
             <p className="text-xs text-gray-500">
-              Controls how booking requests submitted by this customer's
-              contacts reach Fieldkit.
+              Name, billing email, ship-to address, and approval flow.
             </p>
           </div>
-          <Form
-            method="post"
-            className="flex flex-col gap-3 p-4 md:flex-row md:items-end md:justify-between md:px-6"
-          >
-            <input type="hidden" name="intent" value="customer-setting" />
+          <Form method="post" className="space-y-4 p-4 md:px-6">
+            <input type="hidden" name="intent" value="customer-details" />
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Input
+                label="Name"
+                name="name"
+                defaultValue={customer.displayName}
+                required
+              />
+              <Input
+                label="Billing email"
+                name="billingEmail"
+                type="email"
+                defaultValue={customer.billingEmail ?? ""}
+                placeholder="(optional)"
+              />
+              <Input
+                label="Ship-to name"
+                name="shipToName"
+                defaultValue={customer.shipToName ?? ""}
+                placeholder="(optional)"
+              />
+              <Input
+                label="Ship-to phone"
+                name="shipToStreet1"
+                defaultValue={customer.shipToStreet1 ?? ""}
+                placeholder="Street line 1"
+              />
+              <Input
+                label="Ship-to street 2"
+                name="shipToStreet2"
+                defaultValue={customer.shipToStreet2 ?? ""}
+                placeholder="(optional)"
+              />
+              <Input
+                label="City"
+                name="shipToCity"
+                defaultValue={customer.shipToCity ?? ""}
+              />
+              <Input
+                label="State / region"
+                name="shipToState"
+                defaultValue={customer.shipToState ?? ""}
+              />
+              <Input
+                label="Postal code"
+                name="shipToPostalCode"
+                defaultValue={customer.shipToPostalCode ?? ""}
+              />
+              <Input
+                label="Country"
+                name="shipToCountry"
+                defaultValue={customer.shipToCountry ?? ""}
+              />
+            </div>
+            <Input
+              label="Notes"
+              name="notes"
+              defaultValue={customer.notes ?? ""}
+              placeholder="(optional)"
+            />
             <div className="flex max-w-lg items-start gap-2 text-sm text-gray-700">
               <input
                 id="requiresInternalApproval"
                 type="checkbox"
                 name="requiresInternalApproval"
                 value="true"
-                defaultChecked={requiresInternalApproval}
+                defaultChecked={customer.requiresInternalApproval}
                 className="mt-0.5 rounded border-gray-300"
               />
               <label htmlFor="requiresInternalApproval">
                 <span className="font-medium text-gray-900">
-                  Require internal approval before Fieldkit
+                  Require internal approval before staff
                 </span>
                 <span className="block text-xs text-gray-500">
                   When enabled, requests submitted by any contact at this
                   customer must first be approved by a contact with{" "}
-                  <em>Approve bookings</em> permission below. When disabled,
-                  requests go straight to Fieldkit.
+                  <em>Approve bookings</em> permission below.
                 </span>
               </label>
             </div>
-            <Button type="submit" size="sm" variant="secondary">
-              Save settings
-            </Button>
+            <div className="flex justify-end">
+              <Button type="submit" size="sm" variant="secondary">
+                Save details
+              </Button>
+            </div>
           </Form>
         </div>
 
@@ -392,7 +497,7 @@ export default function CustomerDetailPage() {
               Stored assets ({customer.assetCount})
             </h3>
             <p className="text-xs text-gray-500">
-              Assets stored at Fieldkit on behalf of this customer.
+              Assets stored on behalf of this customer.
             </p>
           </div>
           {assets.length === 0 ? (
@@ -460,22 +565,41 @@ export default function CustomerDetailPage() {
         </div>
 
         <div className="rounded border border-gray-200 bg-white">
-          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 md:px-6">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Contacts ({contacts.length})
-            </h3>
-            <p className="text-xs text-gray-500">
-              Synced from Carbon. Toggle permissions per contact below.
-            </p>
+          <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 md:flex-row md:items-center md:justify-between md:px-6">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">
+                Contacts ({contacts.length})
+              </h3>
+              <p className="text-xs text-gray-500">
+                Invite a contact and toggle their permissions below.
+              </p>
+            </div>
+            <Form
+              method="post"
+              className="flex items-center gap-2"
+              key={contacts.length}
+            >
+              <input type="hidden" name="intent" value="invite-contact" />
+              <input
+                type="email"
+                name="email"
+                required
+                placeholder="contact@company.com"
+                className="rounded border border-gray-200 px-3 py-1.5 text-sm"
+              />
+              <Button type="submit" size="sm" variant="secondary">
+                Invite contact
+              </Button>
+            </Form>
           </div>
           {contacts.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-gray-500 md:px-6">
-              No contacts in Carbon for this customer yet.
+              No contacts for this customer yet.
             </p>
           ) : (
             <ul>
               {contacts.map((contact) => (
-                <ContactRow key={contact.carbonContactId} contact={contact} />
+                <ContactRow key={contact.userId} contact={contact} />
               ))}
             </ul>
           )}
@@ -493,7 +617,6 @@ function ContactRow({ contact }: ContactRowProps) {
     .join(" ")
     .trim();
   const perm = contact.permission;
-  const canEditPermissions = Boolean(contact.userId);
 
   return (
     <li className="border-b border-gray-50 p-4 md:px-6">
@@ -502,61 +625,48 @@ function ContactRow({ contact }: ContactRowProps) {
           <div className="font-medium text-gray-900">
             {fullName || contact.email}
           </div>
-          <div className="text-xs text-gray-500">
-            {contact.email} · Carbon contact id: {contact.carbonContactId}
-            {!canEditPermissions ? (
-              <span className="ml-2 italic text-amber-600">
-                no shelf user yet
-              </span>
-            ) : null}
-          </div>
+          <div className="text-xs text-gray-500">{contact.email}</div>
         </div>
-        {canEditPermissions ? (
-          <Form
-            method="post"
-            className="flex flex-wrap items-center gap-3 text-sm"
-          >
-            <input type="hidden" name="intent" value="contact-permission" />
-            <input
-              type="hidden"
-              name="contactUserId"
-              value={contact.userId ?? ""}
-            />
-            <PermToggle
-              name="canRequestShipment"
-              label="Request shipment"
-              checked={perm?.canRequestShipment ?? false}
-            />
-            <PermToggle
-              name="canRequestReturn"
-              label="Request return"
-              checked={perm?.canRequestReturn ?? false}
-            />
-            <PermToggle
-              name="canRentInventory"
-              label="Rent inventory"
-              checked={perm?.canRentInventory ?? false}
-            />
-            <PermToggle
-              name="canViewBilling"
-              label="View billing"
-              checked={perm?.canViewBilling ?? false}
-            />
-            <PermToggle
-              name="canManageOtherContacts"
-              label="Manage contacts"
-              checked={perm?.canManageOtherContacts ?? false}
-            />
-            <PermToggle
-              name="canApproveBookings"
-              label="Approve bookings"
-              checked={perm?.canApproveBookings ?? false}
-            />
-            <Button type="submit" size="sm" variant="secondary">
-              Save
-            </Button>
-          </Form>
-        ) : null}
+        <Form
+          method="post"
+          className="flex flex-wrap items-center gap-3 text-sm"
+        >
+          <input type="hidden" name="intent" value="contact-permission" />
+          <input type="hidden" name="contactUserId" value={contact.userId} />
+          <PermToggle
+            name="canRequestShipment"
+            label="Request shipment"
+            checked={perm?.canRequestShipment ?? false}
+          />
+          <PermToggle
+            name="canRequestReturn"
+            label="Request return"
+            checked={perm?.canRequestReturn ?? false}
+          />
+          <PermToggle
+            name="canRentInventory"
+            label="Rent inventory"
+            checked={perm?.canRentInventory ?? false}
+          />
+          <PermToggle
+            name="canViewBilling"
+            label="View billing"
+            checked={perm?.canViewBilling ?? false}
+          />
+          <PermToggle
+            name="canManageOtherContacts"
+            label="Manage contacts"
+            checked={perm?.canManageOtherContacts ?? false}
+          />
+          <PermToggle
+            name="canApproveBookings"
+            label="Approve bookings"
+            checked={perm?.canApproveBookings ?? false}
+          />
+          <Button type="submit" size="sm" variant="secondary">
+            Save
+          </Button>
+        </Form>
       </div>
     </li>
   );

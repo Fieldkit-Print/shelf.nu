@@ -12,7 +12,6 @@
  * physical event.
  *
  * @see {@link file://./types.ts}              Argument shapes
- * @see {@link file://./carbon-push.server.ts} Carbon push contract
  */
 
 import { createHash } from "node:crypto";
@@ -34,9 +33,8 @@ export async function recordBillableEvent(args: RecordBillableEventArgs) {
     create: {
       organizationId: args.organizationId,
       kind: args.kind,
-      carbonCustomerId: args.carbonCustomerId,
+      customerId: args.customerId,
       assetId: args.assetId,
-      carbonPartId: args.carbonPartId ?? null,
       locationId: args.locationId ?? null,
       quantity: args.quantity ?? 1,
       amountCents: args.amountCents ?? null,
@@ -78,9 +76,8 @@ function key(parts: Array<string | number | null | undefined>): string {
  */
 export async function recordStorageDay(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   assetId: string;
-  carbonPartId: string | null;
   locationId: string | null;
   /** Billing day (UTC midnight). */
   day: Date;
@@ -91,9 +88,8 @@ export async function recordStorageDay(args: {
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "STORAGE",
-    carbonCustomerId: args.carbonCustomerId,
+    customerId: args.customerId,
     assetId: args.assetId,
-    carbonPartId: args.carbonPartId,
     locationId: args.locationId,
     quantity: 1,
     amountCents: args.amountCents ?? null,
@@ -108,9 +104,8 @@ export async function recordStorageDay(args: {
 /** Records a pick (asset checked out of storage). */
 export async function recordPick(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   assetId: string;
-  carbonPartId: string | null;
   locationId: string | null;
   occurredAt: Date;
   amountCents?: number;
@@ -119,9 +114,8 @@ export async function recordPick(args: {
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "PICK",
-    carbonCustomerId: args.carbonCustomerId,
+    customerId: args.customerId,
     assetId: args.assetId,
-    carbonPartId: args.carbonPartId,
     locationId: args.locationId,
     quantity: 1,
     amountCents: args.amountCents ?? null,
@@ -134,9 +128,8 @@ export async function recordPick(args: {
 /** Records a return (asset checked back into storage). */
 export async function recordReturn(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   assetId: string;
-  carbonPartId: string | null;
   locationId: string | null;
   occurredAt: Date;
   amountCents?: number;
@@ -145,9 +138,8 @@ export async function recordReturn(args: {
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "RETURN",
-    carbonCustomerId: args.carbonCustomerId,
+    customerId: args.customerId,
     assetId: args.assetId,
-    carbonPartId: args.carbonPartId,
     locationId: args.locationId,
     quantity: 1,
     amountCents: args.amountCents ?? null,
@@ -167,9 +159,8 @@ export async function recordReturn(args: {
  */
 export async function recordRentalUseDay(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   assetId: string;
-  carbonPartId: string | null;
   bookingId: string;
   day: Date;
   amountCents?: number;
@@ -179,9 +170,8 @@ export async function recordRentalUseDay(args: {
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "RENTAL_USE",
-    carbonCustomerId: args.carbonCustomerId,
+    customerId: args.customerId,
     assetId: args.assetId,
-    carbonPartId: args.carbonPartId,
     quantity: 1,
     amountCents: args.amountCents ?? null,
     currencyCode: args.currencyCode ?? null,
@@ -199,9 +189,8 @@ export async function recordRentalUseDay(args: {
  */
 export async function recordRentalLoss(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   assetId: string;
-  carbonPartId: string | null;
   bookingId: string;
   occurredAt: Date;
   amountCents?: number;
@@ -210,9 +199,8 @@ export async function recordRentalLoss(args: {
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "RENTAL_LOSS",
-    carbonCustomerId: args.carbonCustomerId,
+    customerId: args.customerId,
     assetId: args.assetId,
-    carbonPartId: args.carbonPartId,
     quantity: 1,
     amountCents: args.amountCents ?? null,
     currencyCode: args.currencyCode ?? null,
@@ -229,9 +217,8 @@ export async function recordRentalLoss(args: {
  */
 export async function recordConsumableUse(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   assetId: string;
-  carbonPartId: string | null;
   bookingId: string;
   quantityUsed: number;
   occurredAt: Date;
@@ -242,9 +229,8 @@ export async function recordConsumableUse(args: {
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "CONSUMABLE_USE",
-    carbonCustomerId: args.carbonCustomerId,
+    customerId: args.customerId,
     assetId: args.assetId,
-    carbonPartId: args.carbonPartId,
     quantity: args.quantityUsed,
     amountCents: args.amountCents ?? null,
     currencyCode: args.currencyCode ?? null,

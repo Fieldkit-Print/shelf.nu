@@ -2,7 +2,7 @@ import { data, type ActionFunctionArgs } from "react-router";
 import { z } from "zod";
 import { getAsset } from "~/modules/asset/service.server";
 import { createScan } from "~/modules/scan/service.server";
-import { makeShelfError } from "~/utils/error";
+import { makeShelfError, ShelfError } from "~/utils/error";
 import { payload, error, parseData } from "~/utils/http.server";
 import {
   PermissionAction,
@@ -46,6 +46,19 @@ export async function action({ context, request }: ActionFunctionArgs) {
     });
     /** WE get the first qrCode as the app only supports 1 code per asset for now */
     const qr = asset?.qrCodes[0];
+
+    if (!qr) {
+      throw new ShelfError({
+        cause: null,
+        title: "No QR code",
+        message:
+          "This asset doesn't have a QR code, so the scan couldn't be recorded.",
+        additionalData: { assetId },
+        label: "Scanner",
+        status: 400,
+        shouldBeCaptured: false,
+      });
+    }
 
     await createScan({
       userAgent: request.headers.get("user-agent") as string,

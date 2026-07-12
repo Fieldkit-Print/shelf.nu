@@ -256,7 +256,9 @@ describe("buildCsvBackupDataFromAssets", () => {
 
     expect(result).toEqual([
       [
-        "asset-1",
+        // Scalar fields are quote-wrapped so a value containing the `;`
+        // delimiter or a newline can't shift columns on re-import.
+        '"asset-1"',
         '"Line 1Line 2"',
         "{}",
         "{}",
@@ -267,6 +269,23 @@ describe("buildCsvBackupDataFromAssets", () => {
         "",
       ],
     ]);
+  });
+
+  it("quotes and escapes scalar fields containing the delimiter or quotes", () => {
+    const assets = [
+      {
+        id: 'a;b"c',
+        description: null,
+      },
+    ];
+
+    const result = buildCsvBackupDataFromAssets({
+      assets: assets as any,
+      keysToSkip: [],
+    });
+
+    // `;` stays inside the quoted field; internal quotes are doubled.
+    expect(result[0][0]).toBe('"a;b""c"');
   });
 });
 

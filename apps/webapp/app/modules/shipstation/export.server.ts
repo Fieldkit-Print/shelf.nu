@@ -31,23 +31,15 @@ import type {
   ShipstationOrder,
 } from "./types";
 
-/** Shape pulled from `carbon_remote.v1_customer_locations` via FDW. */
-type CustomerLocationRow = {
-  customer_id: string;
+/** Default ship-to address, sourced from the local {@link Customer} row. */
+type CustomerDefaultLocation = {
   name: string | null;
-  address_line_1: string | null;
-  address_line_2: string | null;
+  line1: string | null;
+  line2: string | null;
   city: string | null;
-  state_province: string | null;
-  postal_code: string | null;
-  country_code: string | null;
-  phone: string | null;
-};
-
-/** Shape pulled from `carbon_remote.v1_customers` via FDW. */
-type CustomerRow = {
-  id: string;
-  display_name: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
 };
 
 /**
@@ -72,7 +64,6 @@ export async function listOrdersForExport(args: {
           id: true,
           title: true,
           sequentialId: true,
-          carbonPartId: true,
           weightOz: true,
           lengthIn: true,
           widthIn: true,
@@ -88,50 +79,45 @@ export async function listOrdersForExport(args: {
 
   if (requests.length === 0) return [];
 
-  // FDW-resolve customer name + default ship-to address for every
-  // distinct customer in this batch. One query each, JOINed in memory.
-  const carbonCustomerIds = Array.from(
-    new Set(requests.map((r) => r.carbonCustomerId))
-  );
-
-  const [customers, locations] = await Promise.all([
-    db.$queryRaw<CustomerRow[]>`
-      SELECT id, display_name
-      FROM carbon_remote.v1_customers
-      WHERE id = ANY(${carbonCustomerIds}::text[])
-    `,
-    db.$queryRaw<(CustomerLocationRow & { id: string })[]>`
-      SELECT id, customer_id, name, address_line_1, address_line_2,
-             city, state_province, postal_code, country_code, phone
-      FROM carbon_remote.v1_customer_locations
-      WHERE customer_id = ANY(${carbonCustomerIds}::text[])
-      ORDER BY id ASC
-    `,
-  ]);
-
+  // Customer name + default ship-to come from the local Customer table.
+  // Customer has no relation fields (scalar refs only), so batch-fetch the
+  // distinct customers in this window and join in memory.
+  const customerIds = Array.from(new Set(requests.map((r) => r.customerId)));
+  const customers = await db.customer.findMany({
+    where: { id: { in: customerIds } },
+    select: {
+      id: true,
+      name: true,
+      shipToName: true,
+      shipToStreet1: true,
+      shipToStreet2: true,
+      shipToCity: true,
+      shipToState: true,
+      shipToPostalCode: true,
+      shipToCountry: true,
+    },
+  });
   const customerById = new Map(customers.map((c) => [c.id, c]));
-  // First location per customer is treated as the default — see the
-  // contract-views doc comment for the rationale.
-  const defaultLocationByCustomerId = new Map<string, CustomerLocationRow>();
-  for (const loc of locations) {
-    if (!defaultLocationByCustomerId.has(loc.customer_id)) {
-      defaultLocationByCustomerId.set(loc.customer_id, loc);
-    }
-  }
 
   return requests.map((req) => {
-    const customer = customerById.get(req.carbonCustomerId);
-    const defaultLocation = defaultLocationByCustomerId.get(
-      req.carbonCustomerId
-    );
+    const customer = customerById.get(req.customerId);
+    const defaultLocation: CustomerDefaultLocation = {
+      name: customer?.shipToName ?? null,
+      line1: customer?.shipToStreet1 ?? null,
+      line2: customer?.shipToStreet2 ?? null,
+      city: customer?.shipToCity ?? null,
+      state: customer?.shipToState ?? null,
+      postalCode: customer?.shipToPostalCode ?? null,
+      country: customer?.shipToCountry ?? null,
+    };
     const shipTo = resolveShipTo({
       request: req,
       defaultLocation,
-      fallbackName: customer?.display_name ?? null,
+      fallbackName: customer?.name ?? null,
     });
 
     const items: ShipstationItem[] = req.assets.map((a) => ({
-      sku: a.sequentialId ?? a.carbonPartId ?? a.id,
+      sku: a.sequentialId ?? a.id,
       name: a.title,
       weightOz: a.weightOz ? Number(a.weightOz) : null,
       lengthIn: a.lengthIn ? Number(a.lengthIn) : null,
@@ -150,9 +136,9 @@ export async function listOrdersForExport(args: {
       customerNotes: req.notes,
       internalNotes: null,
       customer: {
-        customerCode: req.carbonCustomerId,
-        name: customer?.display_name ?? "Unknown Customer",
-        company: customer?.display_name ?? null,
+        customerCode: req.customerId,
+        name: customer?.name || "Unknown Customer",
+        company: customer?.name || null,
         email: req.requester?.email ?? null,
         phone: shipTo.phone,
         shipTo,
@@ -163,8 +149,8 @@ export async function listOrdersForExport(args: {
 }
 
 /**
- * Merges per-request overrides with the Carbon-side default location to
- * produce the structured ship-to address. Any non-null field on the
+ * Merges per-request overrides with the customer's default ship-to address
+ * to produce the structured ship-to address. Any non-null field on the
  * request wins. Missing fields fall back to the default. Empty strings
  * are treated as "not provided" so blank fields in the request form
  * still resolve to the default.
@@ -180,7 +166,7 @@ function resolveShipTo(args: {
     shipToPostal: string | null;
     shipToCountry: string | null;
   };
-  defaultLocation: CustomerLocationRow | undefined;
+  defaultLocation: CustomerDefaultLocation;
   fallbackName: string | null;
 }): ShipstationAddress {
   const { request, defaultLocation, fallbackName } = args;
@@ -190,18 +176,17 @@ function resolveShipTo(args: {
   ): string => nonEmpty(override) ?? nonEmpty(fallback ?? null) ?? "";
 
   return {
-    name: pick(request.shipToName, fallbackName) || "Unknown",
+    name:
+      pick(request.shipToName, defaultLocation.name ?? fallbackName) ||
+      "Unknown",
     company: nonEmpty(fallbackName) ?? null,
-    line1: pick(request.shipToLine1, defaultLocation?.address_line_1),
-    line2:
-      nonEmpty(request.shipToLine2) ??
-      nonEmpty(defaultLocation?.address_line_2 ?? null),
-    city: pick(request.shipToCity, defaultLocation?.city),
-    state: pick(request.shipToState, defaultLocation?.state_province),
-    postalCode: pick(request.shipToPostal, defaultLocation?.postal_code),
-    country: pick(request.shipToCountry, defaultLocation?.country_code) || "US",
-    phone:
-      nonEmpty(request.shipToPhone) ?? nonEmpty(defaultLocation?.phone ?? null),
+    line1: pick(request.shipToLine1, defaultLocation.line1),
+    line2: nonEmpty(request.shipToLine2) ?? nonEmpty(defaultLocation.line2),
+    city: pick(request.shipToCity, defaultLocation.city),
+    state: pick(request.shipToState, defaultLocation.state),
+    postalCode: pick(request.shipToPostal, defaultLocation.postalCode),
+    country: pick(request.shipToCountry, defaultLocation.country) || "US",
+    phone: nonEmpty(request.shipToPhone),
   };
 }
 

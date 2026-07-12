@@ -307,18 +307,30 @@ export async function generateBulkSequentialIdsEfficient(
     }
 
     const result = totalUpdated;
-    // Update the sequence to continue from the right place for new assets
-    const totalAssetsWithIds = await db.asset.count({
-      where: {
-        organizationId,
-        sequentialId: { not: null },
-      },
-    });
+    // Update the sequence to continue past the highest numeric suffix actually
+    // in use. Using a COUNT here would be wrong: after deletions the count is
+    // lower than the max suffix, so the sequence would be set too low and the
+    // next single creation would regenerate an already-used id (unique-
+    // constraint violation). Re-query the max suffix so we always continue
+    // above every existing id.
+    const maxAfterAssign = await db.$queryRaw<[{ max_num: number | null }]>`
+      SELECT COALESCE(MAX(
+        CASE
+          WHEN "sequentialId" ~ ('^' || ${prefix} || '-[0-9]+$')
+          THEN CAST(SUBSTRING("sequentialId" FROM (${prefix} || '-([0-9]+)')) AS INTEGER)
+          ELSE 0
+        END
+      ), 0) as max_num
+      FROM "Asset"
+      WHERE "organizationId" = ${organizationId}
+      AND "sequentialId" IS NOT NULL
+    `;
+    const highestSuffix = maxAfterAssign[0]?.max_num || 0;
 
     await db.$executeRaw`
       SELECT setval(
-        'org_' || ${organizationId} || '_asset_sequence', 
-        GREATEST(${totalAssetsWithIds}, 1)
+        'org_' || ${organizationId} || '_asset_sequence',
+        GREATEST(${highestSuffix}, 1)
       )
     `;
 

@@ -2,13 +2,13 @@
  * Booking request — composer.
  *
  * Customer-only route. Lists the assets + kits the requester can pick from
- * (their carbonCustomerId-owned assets/kits + Fieldkit-owned rentable pool
+ * (their customerId-owned assets/kits + Fieldkit-owned rentable pool
  * when the requester has `canRentInventory`), a date range, an optional
  * shipping address override, and freeform notes.
  *
  * On submit, the BookingRequest is created with status PENDING_INTERNAL or
  * PENDING_FIELDKIT depending on the customer's
- * `CustomerSetting.requiresInternalApproval`. The user is redirected to the
+ * `Customer.requiresInternalApproval`. The user is redirected to the
  * detail page so they can see the status and (optionally) cancel.
  */
 
@@ -63,7 +63,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       action: PermissionAction.create,
     });
 
-    if (!perm.isCustomer || !perm.carbonCustomerId) {
+    if (!perm.isCustomer || !perm.customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",
@@ -107,13 +107,13 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
           id: a.id,
           title: a.title,
           rentable: a.rentable,
-          carbonCustomerId: a.carbonCustomerId,
+          customerId: a.customerId,
         })),
         kits: kitsResult.kits.map((k) => ({
           id: k.id,
           name: k.name,
           rentable: k.rentable,
-          carbonCustomerId: k.carbonCustomerId,
+          customerId: k.customerId,
         })),
         canRentInventory,
       })
@@ -138,7 +138,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
       action: PermissionAction.create,
     });
 
-    if (!perm.isCustomer || !perm.carbonCustomerId) {
+    if (!perm.isCustomer || !perm.customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",
@@ -160,7 +160,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
 
     const created = await submitBookingRequest({
       organizationId: perm.organizationId,
-      carbonCustomerId: perm.carbonCustomerId,
+      customerId: perm.customerId,
       requesterId: userId,
       input: {
         ...input,
@@ -253,7 +253,7 @@ export default function NewRequest() {
                       className="size-4 rounded border-gray-300"
                     />
                     <span className="flex-1">{asset.title}</span>
-                    {asset.carbonCustomerId === null && asset.rentable ? (
+                    {asset.customerId === null && asset.rentable ? (
                       <span className="text-xs font-medium text-primary-700">
                         rentable
                       </span>
@@ -287,7 +287,7 @@ export default function NewRequest() {
                       className="size-4 rounded border-gray-300"
                     />
                     <span className="flex-1">{kit.name}</span>
-                    {kit.carbonCustomerId === null && kit.rentable ? (
+                    {kit.customerId === null && kit.rentable ? (
                       <span className="text-xs font-medium text-primary-700">
                         rentable
                       </span>
