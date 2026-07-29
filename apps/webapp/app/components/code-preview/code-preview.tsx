@@ -106,7 +106,8 @@ const QR_PRINT_PAGE_STYLE = `
 /**
  * Print-only QR label container sized to fill a 2" x 1" label. Horizontal
  * layout: QR code on the left, title/ID/branding on the right. CSS inch
- * units map 1:1 to physical inches when printed.
+ * units map 1:1 to physical inches when printed. The 0.1" padding keeps
+ * content clear of the rounded corners on die-cut label stock.
  */
 const QR_PRINT_LABEL_STYLE: CSSProperties = {
   width: "2in",
@@ -115,16 +116,16 @@ const QR_PRINT_LABEL_STYLE: CSSProperties = {
   flexDirection: "row",
   alignItems: "center",
   gap: "0.08in",
-  padding: "0.06in",
+  padding: "0.1in",
   boxSizing: "border-box",
   backgroundColor: "white",
   overflow: "hidden",
 };
 
-/** QR image on the 2" x 1" print label — square, nearly full label height. */
+/** QR image on the 2" x 1" print label — square, fills the 0.8" safe area. */
 const QR_PRINT_IMAGE_STYLE: CSSProperties = {
-  width: "0.88in",
-  height: "0.88in",
+  width: "0.8in",
+  height: "0.8in",
   flexShrink: 0,
 };
 
