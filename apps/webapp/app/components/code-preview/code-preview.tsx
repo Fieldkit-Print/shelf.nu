@@ -85,6 +85,97 @@ const LABEL_TITLE_STYLE: CSSProperties = {
   textAlign: "center",
 };
 
+/**
+ * Page rule for QR label printing. Defaults the print dialog to standard
+ * 2" x 1" label stock (landscape) with no margins so the label fills the
+ * physical sticker exactly.
+ */
+const QR_PRINT_PAGE_STYLE = `
+  @page {
+    size: 2in 1in;
+    margin: 0;
+  }
+  @media print {
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+  }
+`;
+
+/**
+ * Print-only QR label container sized to fill a 2" x 1" label. Horizontal
+ * layout: QR code on the left, title/ID/branding on the right. CSS inch
+ * units map 1:1 to physical inches when printed.
+ */
+const QR_PRINT_LABEL_STYLE: CSSProperties = {
+  width: "2in",
+  height: "1in",
+  display: "flex",
+  flexDirection: "row",
+  alignItems: "center",
+  gap: "0.08in",
+  padding: "0.06in",
+  boxSizing: "border-box",
+  backgroundColor: "white",
+  overflow: "hidden",
+};
+
+/** QR image on the 2" x 1" print label — square, nearly full label height. */
+const QR_PRINT_IMAGE_STYLE: CSSProperties = {
+  width: "0.88in",
+  height: "0.88in",
+  flexShrink: 0,
+};
+
+/** Text column next to the QR image on the 2" x 1" print label. */
+const QR_PRINT_TEXT_COLUMN_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  minWidth: 0,
+  flex: 1,
+  color: "black",
+};
+
+/** Item title on the 2" x 1" print label — single line, truncated. */
+const QR_PRINT_TITLE_STYLE: CSSProperties = {
+  fontSize: "8pt",
+  fontWeight: 600,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+/** QR/SAM id on the 2" x 1" print label. */
+const QR_PRINT_ID_STYLE: CSSProperties = {
+  fontSize: "7pt",
+  fontWeight: 600,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+/** "Powered by shelf.nu" branding line on the 2" x 1" print label. */
+const QR_PRINT_BRANDING_STYLE: CSSProperties = {
+  fontSize: "6pt",
+};
+
+/**
+ * Resolves which identifier to show on a QR label: the workspace's SAM id
+ * when that display preference is active (and one exists), otherwise the
+ * QR code's own id.
+ */
+function resolveQrDisplayId(
+  qrId?: string,
+  qrIdDisplayPreference?: string,
+  sequentialId?: string | null
+) {
+  return qrIdDisplayPreference === "SAM_ID" && sequentialId
+    ? sequentialId
+    : qrId;
+}
+
 interface CodePreviewProps {
   className?: string;
   style?: CSSProperties;
@@ -128,6 +219,8 @@ export const CodePreview = ({
   showShelfBranding,
 }: CodePreviewProps) => {
   const captureDivRef = useRef<HTMLImageElement>(null);
+  /** Off-screen 2" x 1" QR label used as the print source (QR codes only). */
+  const printLabelRef = useRef<HTMLDivElement>(null);
   const downloadBtnRef = useRef<HTMLAnchorElement>(null);
   const { canUseBarcodes } = useBarcodePermissions();
   const { isBaseOrSelfService, isOwner } = useUserRoleHelper();
@@ -281,7 +374,22 @@ export const CodePreview = ({
     }
   }
 
-  const printCode = useReactToPrint({
+  /**
+   * QR codes print on a dedicated off-screen 2" x 1" layout so the output
+   * matches standard label stock by default (see QR_PRINT_PAGE_STYLE).
+   */
+  const printQrLabel = useReactToPrint({
+    contentRef: printLabelRef,
+    pageStyle: QR_PRINT_PAGE_STYLE,
+    onBeforePrint: () => {
+      const container = printLabelRef.current;
+      if (!container) return Promise.resolve();
+      return waitForImagesToLoad(container);
+    },
+  });
+
+  /** Barcodes keep printing the on-screen preview on the default page size. */
+  const printBarcodeLabel = useReactToPrint({
     contentRef: captureDivRef,
     onBeforePrint: () => {
       const container = captureDivRef.current;
@@ -289,6 +397,14 @@ export const CodePreview = ({
       return waitForImagesToLoad(container);
     },
   });
+
+  function printCode() {
+    if (selectedCode?.type === "qr") {
+      printQrLabel();
+    } else {
+      printBarcodeLabel();
+    }
+  }
 
   // Don't render if no codes available
   if (availableCodes.length === 0) {
@@ -384,6 +500,21 @@ export const CodePreview = ({
         ) : null}
       </div>
 
+      {/* Off-screen 2" x 1" print layout for QR codes. react-to-print can't
+          clone display:none content, so it's hidden via zero-height overflow. */}
+      {selectedCode?.type === "qr" ? (
+        <div style={{ overflow: "hidden", height: 0 }} aria-hidden="true">
+          <QrLabelPrint
+            ref={printLabelRef}
+            data={{ qr: { id: selectedCode.id, ...selectedCode.qrData } }}
+            title={item.name}
+            qrIdDisplayPreference={organization?.qrIdDisplayPreference}
+            sequentialId={sequentialId}
+            showShelfBranding={resolvedShowShelfBranding}
+          />
+        </div>
+      ) : null}
+
       {/* Actions */}
       <When truthy={!hideButton && !!selectedCode}>
         <div className="mt-8 flex w-full items-center gap-3 border-t-[1.1px] border-[#E3E4E8] px-4 py-3">
@@ -456,14 +587,59 @@ export const QrLabel = React.forwardRef<HTMLDivElement, QrLabelProps>(
         </figure>
         <div className="w-full text-center text-[12px]">
           <div className="font-semibold">
-            {qrIdDisplayPreference === "SAM_ID" && sequentialId
-              ? sequentialId
-              : data?.qr?.id}
+            {resolveQrDisplayId(
+              data?.qr?.id,
+              qrIdDisplayPreference,
+              sequentialId
+            )}
           </div>
           {showShelfBranding ? (
             <div>
               Powered by{" "}
               <span className="font-semibold text-black">shelf.nu</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+);
+
+/**
+ * Print-only QR label laid out for 2" x 1" label stock: QR code on the
+ * left, title/ID/branding stacked on the right. Rendered off-screen by
+ * `CodePreview` and passed to react-to-print together with
+ * `QR_PRINT_PAGE_STYLE` so prints default to the physical label size.
+ * The on-screen preview keeps using `QrLabel`.
+ */
+export const QrLabelPrint = React.forwardRef<HTMLDivElement, QrLabelProps>(
+  function QrLabelPrint(props, ref) {
+    const {
+      data,
+      title,
+      qrIdDisplayPreference,
+      sequentialId,
+      showShelfBranding = true,
+    } = props ?? {};
+    return (
+      <div style={QR_PRINT_LABEL_STYLE} ref={ref}>
+        <img
+          style={QR_PRINT_IMAGE_STYLE}
+          src={data?.qr?.src}
+          alt={`${data?.qr?.size}-shelf-qr-code.png`}
+        />
+        <div style={QR_PRINT_TEXT_COLUMN_STYLE}>
+          <div style={QR_PRINT_TITLE_STYLE}>{title}</div>
+          <div style={QR_PRINT_ID_STYLE}>
+            {resolveQrDisplayId(
+              data?.qr?.id,
+              qrIdDisplayPreference,
+              sequentialId
+            )}
+          </div>
+          {showShelfBranding ? (
+            <div style={QR_PRINT_BRANDING_STYLE}>
+              Powered by <span style={{ fontWeight: 600 }}>shelf.nu</span>
             </div>
           ) : null}
         </div>
