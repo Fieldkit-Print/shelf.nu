@@ -47,7 +47,9 @@ export const handle = {
 
 export const links: LinksFunction = () => [
   { rel: "manifest", href: "/static/manifest.json" },
-  { rel: "apple-touch-icon", href: "/static/images/fieldkit-logo-x512.png" },
+  // iOS ignores the manifest's icon list and uses this. 192 is the size Apple
+  // scales from; the old target was a file named x512 that is actually 256.
+  { rel: "apple-touch-icon", href: "/static/images/fieldkit-icon-192.png" },
   { rel: "icon", type: "image/svg+xml", href: config.faviconPath },
   ...splashScreenLinks,
   { rel: "stylesheet", href: styles },

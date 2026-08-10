@@ -6,6 +6,7 @@ import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { reactRouterHonoServer } from "react-router-hono-server/dev";
 import { cjsInterop } from "vite-plugin-cjs-interop";
+import { VitePWA } from "vite-plugin-pwa";
 import { init } from "@paralleldrive/cuid2";
 
 const require = createRequire(import.meta.url);
@@ -45,7 +46,7 @@ const httpsConfig =
     ? { key: certKeyPath, cert: certPath }
     : undefined;
 
-export default defineConfig({
+export default defineConfig(({ isSsrBuild }) => ({
   envDir: "../..",
   ssr: {
     noExternal: ["@shelf/database"],
@@ -98,5 +99,73 @@ export default defineConfig({
     }),
     reactRouter(),
     tsconfigPaths(),
+    /**
+     * PWA packaging — primarily so the warehouse scanner is installable and
+     * survives bad Wi-Fi.
+     *
+     * Notes specific to this app being SSR (React Router + Hono), not an SPA:
+     *
+     * - No `navigateFallback`. Documents are server-rendered per request; a
+     *   cached app shell would serve stale HTML and break loader data.
+     *   Navigations stay NetworkFirst so the app degrades to a real offline
+     *   page rather than silently showing yesterday's screen.
+     * - `manifest: false` — we already ship and link a hand-written manifest
+     *   at /static/manifest.json, and letting the plugin emit a second one
+     *   means two competing manifests.
+     *
+     * The payoff is the zxing WASM: ~1MB that previously came from a CDN on
+     * first decode. Precached here, the scanner starts instantly and keeps
+     * decoding when the network drops.
+     */
+    /**
+     * Client build only. React Router runs Vite twice; without this guard the
+     * SSR pass emits a second, never-served service worker into build/server
+     * and does the whole precache walk again for nothing.
+     */
+    !isSsrBuild &&
+      VitePWA({
+        registerType: "autoUpdate",
+        injectRegister: "script-defer",
+        manifest: false,
+        /**
+         * React Router emits the browser bundle to `build/client`, not Vite's
+         * default `dist`. Without this the plugin writes sw.js into an empty
+         * `dist/` and reports "precache 0 entries" — a service worker that
+         * ships and caches nothing, which is worse than none at all because it
+         * looks installed.
+         */
+        outDir: "build/client",
+        workbox: {
+          // The decoder binary is the whole point — it must be precached.
+          globPatterns: ["**/*.{js,css,wasm,woff2}"],
+          // Default is 2MB; the zxing binary alone is ~1MB.
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+          navigateFallback: undefined,
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
+          skipWaiting: true,
+          runtimeCaching: [
+            {
+              // Asset images and QR previews: show something rather than a
+              // broken icon when the connection drops mid-shift.
+              urlPattern: ({ request }: { request: Request }) =>
+                request.destination === "image",
+              handler: "StaleWhileRevalidate",
+              options: {
+                cacheName: "images",
+                expiration: {
+                  maxEntries: 200,
+                  maxAgeSeconds: 60 * 60 * 24 * 7,
+                },
+              },
+            },
+          ],
+        },
+        devOptions: {
+          // Keep the service worker out of the way during development —
+          // a stale precache while iterating is worse than no offline support.
+          enabled: false,
+        },
+      }),
   ],
-});
+}));

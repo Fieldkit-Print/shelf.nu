@@ -1,19 +1,54 @@
 {
-  "name": "Fieldkit",
+  "name": "Fieldkit Asset Tracker",
   "lang": "en-US",
   "short_name": "Fieldkit",
-  "description": "Fieldkit asset and storage management — track customer-owned inventory, manage rentals, and oversee assets across locations.",
-  "start_url": "/",
+  "description": "Scan, track and manage assets, storage and bookings.",
+  "id": "/",
+  "start_url": "/scanner",
   "display": "standalone",
+  "orientation": "portrait",
   "scope": "/",
-  "theme_color": "#FFFFFF",
-  "background_color": "#FFFFFF",
+  "theme_color": "#0aac4e",
+  "background_color": "#0aac4e",
+  "categories": ["business", "productivity", "utilities"],
   "icons": [
     {
-      "src": "/static/images/fieldkit-logo-x512.png",
-      "sizes": "256x256",
+      "src": "/static/images/fieldkit-icon-192.png",
+      "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "/static/images/fieldkit-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/images/fieldkit-icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan",
+      "short_name": "Scan",
+      "description": "Open the camera scanner",
+      "url": "/scanner",
+      "icons": [
+        { "src": "/static/images/fieldkit-icon-192.png", "sizes": "192x192" }
+      ]
+    },
+    {
+      "name": "Assets",
+      "short_name": "Assets",
+      "description": "Browse the asset list",
+      "url": "/assets",
+      "icons": [
+        { "src": "/static/images/fieldkit-icon-192.png", "sizes": "192x192" }
+      ]
     }
   ]
 }

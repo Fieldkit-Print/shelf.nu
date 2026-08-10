@@ -8,6 +8,7 @@ import {
 import { isQrId } from "~/utils/id";
 import { isShelfQrCode } from "~/utils/qr-code";
 import type { OnCodeDetectionSuccess } from "./code-scanner";
+import { configureZXingWasm } from "./zxing-module.client";
 
 // Supported barcode formats that match our BarcodeType enum
 export const SUPPORTED_BARCODE_FORMATS = Object.values(BarcodeType) as string[];
@@ -272,6 +273,11 @@ export const processFrame = async ({
     ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
 
     const imageData = ctx.getImageData(0, 0, videoWidth, videoHeight);
+
+    // Point zxing at our own copy of the WASM before the first decode.
+    // Idempotent, and cheap enough to call per frame.
+    configureZXingWasm();
+
     const results = await readBarcodes(imageData, {
       tryHarder: true,
       formats: [], // Empty array detects all supported barcode types
