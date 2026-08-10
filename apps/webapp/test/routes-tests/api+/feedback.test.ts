@@ -127,9 +127,7 @@ describe("/api/feedback", () => {
         userName: "Jane Doe",
         userEmail: "jane@example.com",
         organizationName: "Acme Corp",
-        type: "issue",
         message: "Something is broken in the app",
-        screenshotUrl: null,
       });
     });
 
@@ -197,34 +195,6 @@ describe("/api/feedback", () => {
 
       expect(result instanceof Response).toBe(true);
       expect((result as unknown as Response).status).toBe(405);
-    });
-
-    it("should include screenshot URL when provided", async () => {
-      const request = createFeedbackRequest({
-        type: "issue",
-        message: "Something is broken in the app",
-      });
-
-      (parseFileFormData as any).mockImplementation(async () => {
-        const fd = new FormData();
-        fd.set("type", "issue");
-        fd.set("message", "Something is broken in the app");
-        fd.set("screenshot", "feedback/user-1/123456.png");
-        return fd;
-      });
-
-      await action(createActionArgs({ request, context: mockContext }));
-
-      expect(getPublicFileURL).toHaveBeenCalledWith({
-        filename: "feedback/user-1/123456.png",
-        bucketName: "files",
-      });
-
-      expect(sendFeedbackEmail).toHaveBeenCalledWith(
-        expect.objectContaining({
-          screenshotUrl: "https://storage.example.com/file.png",
-        })
-      );
     });
   });
 });

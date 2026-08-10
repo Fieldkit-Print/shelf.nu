@@ -48,7 +48,7 @@ export type BookingRequestSummary = Pick<
   | "status"
   | "proposedFrom"
   | "proposedTo"
-  | "carbonCustomerId"
+  | "customerId"
   | "requesterId"
   | "createdAt"
   | "updatedAt"

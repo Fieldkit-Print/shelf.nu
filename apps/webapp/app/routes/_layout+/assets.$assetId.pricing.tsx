@@ -22,8 +22,13 @@ import { ErrorContent } from "~/components/errors";
 import Input from "~/components/forms/input";
 import { Button } from "~/components/shared/button";
 import { useDisabled } from "~/hooks/use-disabled";
-import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
 import {
+  centsToDollars,
+  dollarsToCents,
+  moneyDollarsSchema,
+} from "~/modules/pricing/format";
+import {
+  assertAssetBelongsToOrg,
   getAssetPricing,
   upsertAssetPricing,
 } from "~/modules/pricing/service.server";
@@ -46,8 +51,7 @@ import { requirePermission } from "~/utils/roles.server";
 const ParamSchema = z.object({ assetId: z.string() });
 
 const PricingFormSchema = z.object({
-  storagePerDayDollars: z.string().optional(),
-  rentalPerDayDollars: z.string().optional(),
+  rentalPerDayDollars: moneyDollarsSchema,
 });
 
 export async function loader({ context, request, params }: LoaderFunctionArgs) {
@@ -58,12 +62,19 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
   });
 
   try {
-    await requirePermission({
+    const { organizationId } = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.asset,
       action: PermissionAction.update,
     });
+
+    // `AssetPricing` has no organizationId of its own, so nothing downstream
+    // can catch a foreign asset id — the ownership check has to happen here.
+    // Without it any user (everyone is OWNER of their personal workspace, so
+    // everyone holds asset:update somewhere) could read and rewrite another
+    // tenant's rates by putting their asset id in the URL.
+    await assertAssetBelongsToOrg({ assetId, organizationId });
 
     const pricing = await getAssetPricing(assetId);
     return data(payload({ pricing }));
@@ -89,12 +100,14 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
   try {
     assertIsPost(request);
 
-    await requirePermission({
+    const { organizationId } = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.asset,
       action: PermissionAction.update,
     });
+
+    await assertAssetBelongsToOrg({ assetId, organizationId });
 
     const formData = await request.formData();
     const parsed = parseData(formData, PricingFormSchema, {
@@ -104,7 +117,6 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
     await upsertAssetPricing({
       assetId,
       patch: {
-        storagePerDayCents: dollarsToCents(parsed.storagePerDayDollars),
         rentalPerDayCents: dollarsToCents(parsed.rentalPerDayDollars),
       },
     });
@@ -154,20 +166,13 @@ export default function AssetPricingTab() {
             >
               workspace level
             </Link>
-            ). Pick, return, and the multipliers are not settable per asset.
+            ). Storage is priced by the pallet position the asset occupies — set
+            that on the location, not here. Pick, return, and the multipliers
+            are org- or customer-wide.
           </p>
         </div>
 
         <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 md:px-6">
-          <Input
-            label="Storage / day ($)"
-            name="storagePerDayDollars"
-            defaultValue={centsToDollars(pricing?.storagePerDayCents)}
-            type="number"
-            step="0.01"
-            min="0"
-            placeholder="(use default)"
-          />
           <Input
             label="Rental / day ($)"
             name="rentalPerDayDollars"

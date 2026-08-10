@@ -19,7 +19,7 @@
  * @see {@link file://./../../../packages/database/prisma/schema.prisma} OrgPricing, CustomerPricing, AssetPricing
  */
 
-import type { Prisma } from "@prisma/client";
+import type { Prisma, StorageSlotTier } from "@prisma/client";
 
 import { db } from "~/database/db.server";
 import { ShelfError } from "~/utils/error";
@@ -29,18 +29,21 @@ const label = "Pricing" as const;
 /**
  * Pricing kinds that resolve to a flat cents amount. These map 1:1 to the
  * eponymous `BillableEventKind` values.
+ *
+ * STORAGE is deliberately absent: storage is sold per occupied pallet
+ * position per month, priced by slot tier rather than as a flat per-asset
+ * rate. See {@link resolveStorageMonthCents}.
  */
-export type FlatRateKind = "STORAGE" | "PICK" | "RETURN" | "RENTAL_USE";
+export type FlatRateKind = "PICK" | "RETURN" | "RENTAL_USE";
 
 /**
- * Result of a flat-rate resolution. `source` identifies which tier won
- * — useful for logs and for surfacing "this rate is inherited from X"
- * in admin UI later.
+ * Result of a rate resolution. `source` identifies which tier won — useful
+ * for logs and for surfacing "this rate is inherited from X" in admin UI.
  */
 export type ResolvedRate = {
   amountCents: number;
   currencyCode: string;
-  source: "asset" | "customer" | "org";
+  source: "asset" | "location" | "customer" | "org";
 };
 
 /**
@@ -49,12 +52,29 @@ export type ResolvedRate = {
  */
 const KIND_TO_COLUMN: Record<
   FlatRateKind,
-  "storagePerDayCents" | "pickCents" | "returnCents" | "rentalPerDayCents"
+  "pickCents" | "returnCents" | "rentalPerDayCents"
 > = {
-  STORAGE: "storagePerDayCents",
   PICK: "pickCents",
   RETURN: "returnCents",
   RENTAL_USE: "rentalPerDayCents",
+};
+
+/**
+ * Maps a standard slot tier to the monthly-rate column that prices it.
+ *
+ * OVERSIZE is excluded by construction: the rate card quotes it per item, so
+ * it carries no standard rate and must be priced by
+ * `Location.storageMonthlyCentsOverride`.
+ */
+const TIER_TO_COLUMN: Record<
+  Exclude<StorageSlotTier, "OVERSIZE">,
+  | "storageHalfPalletCents"
+  | "storageStandardPalletCents"
+  | "storageTallPalletCents"
+> = {
+  HALF_PALLET: "storageHalfPalletCents",
+  STANDARD_PALLET: "storageStandardPalletCents",
+  TALL_PALLET: "storageTallPalletCents",
 };
 
 /**
@@ -74,23 +94,23 @@ const KIND_TO_COLUMN: Record<
  */
 export async function resolveFlatRateCents(args: {
   organizationId: string;
-  carbonCustomerId?: string | null;
+  customerId?: string | null;
   assetId?: string | null;
   kind: FlatRateKind;
 }): Promise<ResolvedRate | null> {
-  const { organizationId, carbonCustomerId, assetId, kind } = args;
+  const { organizationId, customerId, assetId, kind } = args;
   const column = KIND_TO_COLUMN[kind];
 
-  // Asset tier only carries storage + rental rates.
-  const assetTierApplicable =
-    assetId && (kind === "STORAGE" || kind === "RENTAL_USE");
+  // Rental is the only kind with a per-asset override. Storage is priced by
+  // slot, and pick/return are per-shipment policy rates.
+  const assetTierApplicable = assetId && kind === "RENTAL_USE";
 
   const [assetPricing, customerPricing, orgPricing] = await Promise.all([
     assetTierApplicable
       ? db.assetPricing.findUnique({ where: { assetId } })
       : Promise.resolve(null),
-    carbonCustomerId
-      ? db.customerPricing.findUnique({ where: { carbonCustomerId } })
+    customerId
+      ? db.customerPricing.findUnique({ where: { customerId } })
       : Promise.resolve(null),
     db.orgPricing.findUnique({ where: { organizationId } }),
   ]);
@@ -112,8 +132,9 @@ export async function resolveFlatRateCents(args: {
 
   // Walk most-specific to least.
   if (assetPricing) {
-    const value =
-      assetPricing[column as "storagePerDayCents" | "rentalPerDayCents"];
+    // `assetTierApplicable` narrows this to RENTAL_USE, the only kind
+    // AssetPricing carries a column for.
+    const value = assetPricing.rentalPerDayCents;
     if (value !== null && value !== undefined) {
       return { amountCents: value, currencyCode, source: "asset" };
     }
@@ -135,6 +156,85 @@ export async function resolveFlatRateCents(args: {
 }
 
 /**
+ * Resolves the monthly rate for one occupied pallet position.
+ *
+ * Storage is sold per position per month, so the billable unit is the slot,
+ * not the asset sitting in it. Precedence runs most-specific to least:
+ *
+ *   1. `Location.storageMonthlyCentsOverride` — a price negotiated for this
+ *      specific slot. The only way to price an OVERSIZE position, which the
+ *      rate card quotes per item and therefore has no standard rate.
+ *   2. `CustomerPricing.storage<Tier>Cents` — this customer's negotiated rate
+ *      for the tier.
+ *   3. `OrgPricing.storage<Tier>Cents` — the standard rate card.
+ *
+ * Returns null when no tier sets a rate, which the caller should treat as
+ * "not billable" and skip. An OVERSIZE slot with no override always lands
+ * here — that is deliberate, since silently billing it at zero would hide a
+ * misconfiguration that costs real revenue.
+ *
+ * @param args.locationOverrideCents - `Location.storageMonthlyCentsOverride`,
+ *   passed in by the caller because the sweep has already loaded the location.
+ * @throws {ShelfError} If the organization has no OrgPricing row at all.
+ */
+export async function resolveStorageMonthCents(args: {
+  organizationId: string;
+  customerId?: string | null;
+  tier: StorageSlotTier;
+  locationOverrideCents?: number | null;
+}): Promise<ResolvedRate | null> {
+  const { organizationId, customerId, tier, locationOverrideCents } = args;
+
+  const [customerPricing, orgPricing] = await Promise.all([
+    customerId
+      ? db.customerPricing.findUnique({ where: { customerId } })
+      : Promise.resolve(null),
+    db.orgPricing.findUnique({ where: { organizationId } }),
+  ]);
+
+  if (!orgPricing) {
+    throw new ShelfError({
+      cause: null,
+      label,
+      message:
+        "Organization has no default pricing configured. Visit /settings/pricing to set default storage rates before billing storage.",
+      additionalData: { organizationId, tier },
+      shouldBeCaptured: true,
+    });
+  }
+
+  const currencyCode = customerPricing?.currencyCode ?? orgPricing.currencyCode;
+
+  // Slot-specific price wins outright — it exists precisely to escape the
+  // tier table.
+  if (locationOverrideCents !== null && locationOverrideCents !== undefined) {
+    return {
+      amountCents: locationOverrideCents,
+      currencyCode,
+      source: "location",
+    };
+  }
+
+  // OVERSIZE has no standard rate by design; without an override there is
+  // nothing to fall back to.
+  if (tier === "OVERSIZE") return null;
+
+  const column = TIER_TO_COLUMN[tier];
+
+  const customerRate = customerPricing?.[column];
+  if (customerRate !== null && customerRate !== undefined) {
+    return { amountCents: customerRate, currencyCode, source: "customer" };
+  }
+
+  const orgRate = orgPricing[column];
+  if (orgRate !== null && orgRate !== undefined) {
+    return { amountCents: orgRate, currencyCode, source: "org" };
+  }
+
+  return null;
+}
+
+/**
  * Resolves the multiplier applied to `Asset.valuation` when a rental is
  * declared lost. Customer tier overrides org tier; asset tier doesn't
  * carry this field (multipliers are a policy concept, not a per-item one).
@@ -145,11 +245,11 @@ export async function resolveFlatRateCents(args: {
  */
 export async function resolveRentalLossMultiplier(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
 }): Promise<{ multiplier: Prisma.Decimal; source: "customer" | "org" } | null> {
   const [customer, org] = await Promise.all([
     db.customerPricing.findUnique({
-      where: { carbonCustomerId: args.carbonCustomerId },
+      where: { customerId: args.customerId },
     }),
     db.orgPricing.findUnique({
       where: { organizationId: args.organizationId },
@@ -177,11 +277,11 @@ export async function resolveRentalLossMultiplier(args: {
  */
 export async function resolveConsumableMarkupPct(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
 }): Promise<{ markupPct: Prisma.Decimal; source: "customer" | "org" } | null> {
   const [customer, org] = await Promise.all([
     db.customerPricing.findUnique({
-      where: { carbonCustomerId: args.carbonCustomerId },
+      where: { customerId: args.customerId },
     }),
     db.orgPricing.findUnique({
       where: { organizationId: args.organizationId },
@@ -210,12 +310,12 @@ export async function resolveConsumableMarkupPct(args: {
  */
 export async function resolveCurrencyCode(args: {
   organizationId: string;
-  carbonCustomerId?: string | null;
+  customerId?: string | null;
 }): Promise<string> {
   const [customer, org] = await Promise.all([
-    args.carbonCustomerId
+    args.customerId
       ? db.customerPricing.findUnique({
-          where: { carbonCustomerId: args.carbonCustomerId },
+          where: { customerId: args.customerId },
         })
       : Promise.resolve(null),
     db.orgPricing.findUnique({

@@ -2,13 +2,13 @@
  * Booking request — composer.
  *
  * Customer-only route. Lists the assets + kits the requester can pick from
- * (their carbonCustomerId-owned assets/kits + Fieldkit-owned rentable pool
+ * (their customerId-owned assets/kits + Fieldkit-owned rentable pool
  * when the requester has `canRentInventory`), a date range, an optional
  * shipping address override, and freeform notes.
  *
  * On submit, the BookingRequest is created with status PENDING_INTERNAL or
  * PENDING_FIELDKIT depending on the customer's
- * `CustomerSetting.requiresInternalApproval`. The user is redirected to the
+ * `Customer.requiresInternalApproval`. The user is redirected to the
  * detail page so they can see the status and (optionally) cancel.
  */
 
@@ -63,7 +63,7 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
       action: PermissionAction.create,
     });
 
-    if (!perm.isCustomer || !perm.carbonCustomerId) {
+    if (!perm.isCustomer || !perm.customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",
@@ -107,13 +107,13 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
           id: a.id,
           title: a.title,
           rentable: a.rentable,
-          carbonCustomerId: a.carbonCustomerId,
+          customerId: a.customerId,
         })),
         kits: kitsResult.kits.map((k) => ({
           id: k.id,
           name: k.name,
           rentable: k.rentable,
-          carbonCustomerId: k.carbonCustomerId,
+          customerId: k.customerId,
         })),
         canRentInventory,
       })
@@ -138,7 +138,7 @@ export async function action({ context, request }: ActionFunctionArgs) {
       action: PermissionAction.create,
     });
 
-    if (!perm.isCustomer || !perm.carbonCustomerId) {
+    if (!perm.isCustomer || !perm.customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",
@@ -155,12 +155,95 @@ export async function action({ context, request }: ActionFunctionArgs) {
     });
     // parseData drops getAll-style array fields when they aren't in the schema
     // as an array. Pull asset/kit IDs explicitly to be safe.
-    const assetIds = formData.getAll("assetIds").map(String).filter(Boolean);
-    const kitIds = formData.getAll("kitIds").map(String).filter(Boolean);
+    const requestedAssetIds = formData
+      .getAll("assetIds")
+      .map(String)
+      .filter(Boolean);
+    const requestedKitIds = formData
+      .getAll("kitIds")
+      .map(String)
+      .filter(Boolean);
+
+    /**
+     * Re-derive what this requester may actually book and intersect.
+     *
+     * The loader scopes the picker, but the action previously trusted
+     * whatever ids were posted and passed them straight to a Prisma
+     * `connect` — a global lookup with no organization, ownership or
+     * rentability check. A customer could name another customer's asset ids
+     * (or another org's), see their titles rendered on the request detail
+     * page, and have staff approval commit those physical assets to their
+     * booking.
+     *
+     * `canRentInventory` is re-read here for the same reason: enforcing it
+     * only when building the picker list left it bypassable by posting
+     * rentable-pool ids directly.
+     */
+    const contactPerm = await db.customerContactPermission.findUnique({
+      where: { userId },
+      select: { canRentInventory: true },
+    });
+    const canRentInventory = contactPerm?.canRentInventory ?? false;
+
+    const [allowedAssets, allowedKits] = await Promise.all([
+      requestedAssetIds.length
+        ? db.asset.findMany({
+            where: {
+              id: { in: requestedAssetIds },
+              organizationId: perm.organizationId,
+              AND: [
+                buildCustomerAssetScope(perm, {
+                  includeRentable: canRentInventory,
+                }),
+              ],
+            },
+            select: { id: true },
+          })
+        : Promise.resolve([]),
+      requestedKitIds.length
+        ? db.kit.findMany({
+            where: {
+              id: { in: requestedKitIds },
+              organizationId: perm.organizationId,
+              AND: [buildCustomerKitScope(perm)],
+            },
+            select: { id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const assetIds = allowedAssets.map((a) => a.id);
+    const kitIds = allowedKits.map((k) => k.id);
+
+    // Refuse the whole request rather than silently dropping items — a
+    // partially-fulfilled request the customer didn't ask for is worse than
+    // an error, and a mismatch here means either a stale picker or an
+    // attempt to reach outside the customer's scope.
+    if (
+      assetIds.length !== requestedAssetIds.length ||
+      kitIds.length !== requestedKitIds.length
+    ) {
+      throw new ShelfError({
+        cause: null,
+        title: "Some items are unavailable",
+        message:
+          "One or more of the selected items is no longer available to you. Refresh the page and try again.",
+        label: "BookingRequest",
+        status: 403,
+        shouldBeCaptured: true,
+        additionalData: {
+          userId,
+          requestedAssets: requestedAssetIds.length,
+          allowedAssets: assetIds.length,
+          requestedKits: requestedKitIds.length,
+          allowedKits: kitIds.length,
+        },
+      });
+    }
 
     const created = await submitBookingRequest({
       organizationId: perm.organizationId,
-      carbonCustomerId: perm.carbonCustomerId,
+      customerId: perm.customerId,
       requesterId: userId,
       input: {
         ...input,
@@ -253,7 +336,7 @@ export default function NewRequest() {
                       className="size-4 rounded border-gray-300"
                     />
                     <span className="flex-1">{asset.title}</span>
-                    {asset.carbonCustomerId === null && asset.rentable ? (
+                    {asset.customerId === null && asset.rentable ? (
                       <span className="text-xs font-medium text-primary-700">
                         rentable
                       </span>
@@ -287,7 +370,7 @@ export default function NewRequest() {
                       className="size-4 rounded border-gray-300"
                     />
                     <span className="flex-1">{kit.name}</span>
-                    {kit.carbonCustomerId === null && kit.rentable ? (
+                    {kit.customerId === null && kit.rentable ? (
                       <span className="text-xs font-medium text-primary-700">
                         rentable
                       </span>

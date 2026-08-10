@@ -75,16 +75,16 @@ function buildEmailContext(
 }
 
 /**
- * Find users at the same Carbon customer who can act as internal approvers
+ * Find users at the same customer who can act as internal approvers
  * (CustomerContactPermission.canApproveBookings = true). Returns just their
  * emails — the caller doesn't need the full user record.
  */
 async function findInternalApproverEmails(
-  carbonCustomerId: string
+  customerId: string
 ): Promise<string[]> {
   const approvers = await db.user.findMany({
     where: {
-      carbonCustomerId,
+      fieldkitCustomerId: customerId,
       customerContactPermission: { canApproveBookings: true },
       deletedAt: null,
     },
@@ -101,28 +101,29 @@ const label = "BookingRequest" as const;
  *
  * The requester is the currently-authenticated user; tenancy is enforced by
  * the caller (which must have already passed `requirePermission` with the
- * CUSTOMER role and a non-null carbonCustomerId on the perm context).
+ * CUSTOMER role and a non-null customerId on the perm context).
  *
- * @param args - { organizationId, carbonCustomerId, requesterId, input }
+ * @param args - { organizationId, customerId, requesterId, input }
  * @returns The created BookingRequest row
  * @throws {ShelfError} on db failure
  */
 export async function submitBookingRequest(args: {
   organizationId: string;
-  carbonCustomerId: string;
+  customerId: string;
   requesterId: User["id"];
   input: SubmitBookingRequestInput;
 }): Promise<BookingRequest> {
-  const { organizationId, carbonCustomerId, requesterId, input } = args;
+  const { organizationId, customerId, requesterId, input } = args;
 
   try {
     const { request, requester, requiresInternal } = await db.$transaction(
       async (tx) => {
-        // Resolve approval routing. Default (no row) is "no internal approval".
-        const setting = await tx.customerSetting.findUnique({
-          where: { carbonCustomerId },
+        // Resolve approval routing from the customer's setting.
+        const customer = await tx.customer.findUnique({
+          where: { id: customerId },
+          select: { requiresInternalApproval: true },
         });
-        const requiresInternal = setting?.requiresInternalApproval ?? false;
+        const requiresInternal = customer?.requiresInternalApproval ?? false;
 
         const initialStatus = requiresInternal
           ? BookingRequestStatus.PENDING_INTERNAL
@@ -131,7 +132,7 @@ export async function submitBookingRequest(args: {
         const created = await tx.bookingRequest.create({
           data: {
             organizationId,
-            carbonCustomerId,
+            customerId,
             requesterId,
             status: initialStatus,
             proposedFrom: input.proposedFrom,
@@ -192,7 +193,7 @@ export async function submitBookingRequest(args: {
       kitCount: input.kitIds.length,
     });
     if (requiresInternal) {
-      const approvers = await findInternalApproverEmails(carbonCustomerId);
+      const approvers = await findInternalApproverEmails(customerId);
       void sendBookingRequestSubmittedEmail({
         to: approvers,
         context: ctx,
@@ -212,7 +213,7 @@ export async function submitBookingRequest(args: {
       cause,
       label,
       message: "Failed to submit booking request.",
-      additionalData: { organizationId, carbonCustomerId, requesterId },
+      additionalData: { organizationId, customerId, requesterId },
     });
   }
 }
@@ -221,7 +222,7 @@ export async function submitBookingRequest(args: {
  * Internal customer-side approval. Transitions PENDING_INTERNAL →
  * PENDING_FIELDKIT. The approver must hold
  * `CustomerContactPermission.canApproveBookings = true` AND be at the same
- * Carbon customer as the request — both checks are the caller's responsibility
+ * customer as the request — both checks are the caller's responsibility
  * (route loader / action), this function only enforces state-machine validity.
  *
  * @throws {ShelfError} if the request is not in PENDING_INTERNAL
@@ -323,6 +324,22 @@ export async function approveFieldkit(args: {
 
   try {
     const result = await db.$transaction(async (tx) => {
+      /**
+       * Lock the request row before reading its status.
+       *
+       * Without this the status check is a read-check-write at READ
+       * COMMITTED: two staff clearing the shared PENDING_FIELDKIT queue both
+       * saw PENDING_FIELDKIT, both passed the guard, and both created a
+       * Booking. The second update then overwrote `bookingId`, leaving the
+       * first booking orphaned — RESERVED, holding assets, and unreachable
+       * from the request UI.
+       *
+       * `FOR UPDATE` serialises the second transaction behind the first, so
+       * it re-reads the row as APPROVED and the guard below rejects it. Same
+       * approach the reserve/checkout paths already use on assets.
+       */
+      await tx.$queryRaw`SELECT id FROM "BookingRequest" WHERE id = ${requestId} FOR UPDATE`;
+
       const current = await tx.bookingRequest.findUniqueOrThrow({
         where: { id: requestId },
         include: {
@@ -335,7 +352,8 @@ export async function approveFieldkit(args: {
         throw new ShelfError({
           cause: null,
           label,
-          message: `Cannot Fieldkit-approve request in status ${current.status}.`,
+          title: "Already handled",
+          message: `Cannot Fieldkit-approve request in status ${current.status}. Someone may have just actioned it.`,
           additionalData: { requestId, status: current.status },
           shouldBeCaptured: false,
         });
@@ -350,11 +368,69 @@ export async function approveFieldkit(args: {
         }
       }
 
+      /**
+       * Availability check.
+       *
+       * This creates a RESERVED booking directly, bypassing `reserveBooking`
+       * and therefore both of its conflict assertions — so approving a
+       * request for gear already reserved elsewhere silently double-booked
+       * it. The normal UI path refuses that outright.
+       *
+       * Runs inside the same transaction as the create, after the request row
+       * is locked, so a concurrent approval of a *different* request for the
+       * same asset is still caught by the row lock those paths take on assets.
+       */
+      if (allAssetIds.size > 0) {
+        const conflicted = await tx.asset.findMany({
+          where: {
+            id: { in: Array.from(allAssetIds) },
+            bookings: {
+              some: {
+                status: {
+                  in: [
+                    BookingStatus.RESERVED,
+                    BookingStatus.ONGOING,
+                    BookingStatus.OVERDUE,
+                  ],
+                },
+                // Overlap test: existing.from <= proposed.to
+                //            AND existing.to   >= proposed.from
+                from: { lte: current.proposedTo },
+                to: { gte: current.proposedFrom },
+              },
+            },
+          },
+          select: { title: true },
+        });
+
+        if (conflicted.length > 0) {
+          const names = conflicted
+            .slice(0, 3)
+            .map((a) => a.title)
+            .join(", ");
+          const more =
+            conflicted.length > 3 ? ` and ${conflicted.length - 3} more` : "";
+
+          throw new ShelfError({
+            cause: null,
+            label,
+            title: "Booking conflict",
+            message: `Cannot approve. Some requested items are already booked for these dates: ${names}${more}. Adjust the dates or remove those items first.`,
+            additionalData: { requestId, conflicts: conflicted.length },
+            shouldBeCaptured: false,
+          });
+        }
+      }
+
       const booking = await tx.booking.create({
         data: {
           name: `Customer request ${current.id}`,
           status: BookingStatus.RESERVED,
           organizationId: current.organizationId,
+          // The request already knows the customer; carry it onto the booking
+          // so rental billing can attribute the charge without inferring it
+          // from who happened to click the button.
+          customerId: current.customerId,
           creatorId: current.requesterId,
           custodianUserId: current.requesterId,
           from: current.proposedFrom,
@@ -621,7 +697,7 @@ export async function cancelBookingRequest(args: {
 
 /**
  * Fetch a single BookingRequest. Caller is responsible for tenancy
- * enforcement (compare `request.carbonCustomerId` to `perm.carbonCustomerId`
+ * enforcement (compare `request.customerId` to `perm.customerId`
  * for CUSTOMER role users) — this function only loads the row.
  *
  * Generic over the include parameter so the return type narrows to the
@@ -654,16 +730,16 @@ export async function getBookingRequest<
 
 /**
  * List booking requests for either:
- *   - a CUSTOMER user (pass `carbonCustomerId`, optionally restrict to their
+ *   - a CUSTOMER user (pass `customerId`, optionally restrict to their
  *     own requests via `requesterId`) — they see their customer's requests
- *   - Fieldkit staff (omit `carbonCustomerId`) — they see all PENDING_FIELDKIT
+ *   - Fieldkit staff (omit `customerId`) — they see all PENDING_FIELDKIT
  *     org-wide, plus historical APPROVED/REJECTED when `statuses` is widened
  */
 export async function listBookingRequests<
   TInclude extends Prisma.BookingRequestInclude | undefined,
 >(args: {
   organizationId: string;
-  carbonCustomerId?: string;
+  customerId?: string;
   requesterId?: User["id"];
   statuses?: BookingRequestStatus[];
   page?: number;
@@ -677,7 +753,7 @@ export async function listBookingRequests<
 }> {
   const {
     organizationId,
-    carbonCustomerId,
+    customerId,
     requesterId,
     statuses,
     page = 1,
@@ -687,7 +763,7 @@ export async function listBookingRequests<
 
   const where: Prisma.BookingRequestWhereInput = {
     organizationId,
-    ...(carbonCustomerId ? { carbonCustomerId } : {}),
+    ...(customerId ? { customerId } : {}),
     ...(requesterId ? { requesterId } : {}),
     ...(statuses?.length ? { status: { in: statuses } } : {}),
   };

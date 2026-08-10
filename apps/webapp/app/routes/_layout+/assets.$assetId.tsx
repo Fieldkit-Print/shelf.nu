@@ -6,7 +6,7 @@ import {
   PopoverPortal,
   PopoverTrigger,
 } from "@radix-ui/react-popover";
-import { ChevronsUpDown, Check, ExternalLink } from "lucide-react";
+import { ChevronsUpDown, Check } from "lucide-react";
 import { DateTime } from "luxon";
 import type {
   ActionFunctionArgs,
@@ -35,6 +35,7 @@ import {
   CommandList,
 } from "~/components/shared/command";
 import When from "~/components/when/when";
+import { db } from "~/database/db.server";
 import { useUserRoleHelper } from "~/hooks/user-user-role-helper";
 import {
   deleteAsset,
@@ -48,7 +49,6 @@ import {
   validateBarcodeValue,
   normalizeBarcodeValue,
 } from "~/modules/barcode/validation";
-import { listCustomers as listCarbonCustomers } from "~/modules/carbon-sync/client.server";
 import assetCss from "~/styles/asset.css?url";
 
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
@@ -56,7 +56,6 @@ import { checkExhaustiveSwitch } from "~/utils/check-exhaustive-switch";
 import { getHints } from "~/utils/client-hints";
 import { DATE_TIME_FORMAT } from "~/utils/constants";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
-import { CARBON_ERP_BASE_URL } from "~/utils/env";
 import { makeShelfError } from "~/utils/error";
 import {
   error,
@@ -106,11 +105,8 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
         custody: { include: { custodian: true } },
         kit: true,
         qrCodes: true,
-        // Fieldkit: `Asset.carbonCustomerId` is a text reference into Carbon
-        // (no FK / local Customer model). Display layer reads the customer
-        // name via `carbon_remote.v1_customers` FDW or REST as needed.
       },
-      // Fieldkit multi-tenancy: customer-role users see only their own assets.
+      // Multi-tenancy: customer-role users see only their own assets.
       // CUSTOMER must `includeRentable` here so the rentable detail page
       // continues to load when they navigate to a rentable item.
       customerScope: buildCustomerAssetScope(perm, { includeRentable: true }),
@@ -120,32 +116,20 @@ export async function loader({ context, request, params }: LoaderFunctionArgs) {
       title: asset.title,
     };
 
-    // Fieldkit: load the Carbon customer list for the customer-assignment
-    // UI on this page. Staff-only — CUSTOMER role users don't see the
-    // assignment widget, so we skip the REST call for them.
-    let carbonCustomers: { id: string; name: string }[] = [];
-    if (!perm.isCustomer) {
-      try {
-        carbonCustomers = await listCarbonCustomers();
-      } catch {
-        // Carbon REST may be misconfigured / down; degrade gracefully.
-        // The assignment widget just won't render its dropdown.
-        carbonCustomers = [];
-      }
-    }
-
-    // Staff-only deep link to the same item in Carbon ERP, when configured.
-    // Customer-role users don't need (or get to see) Carbon admin URLs.
-    const carbonErpItemUrl =
-      !perm.isCustomer && CARBON_ERP_BASE_URL && asset.carbonPartId
-        ? `${CARBON_ERP_BASE_URL}/x/part/${asset.carbonPartId}`
-        : null;
+    // Load the customer list for the customer-assignment UI on this page.
+    // Staff-only — CUSTOMER role users don't see the assignment widget.
+    const customers = !perm.isCustomer
+      ? await db.customer.findMany({
+          where: { organizationId },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true },
+        })
+      : [];
 
     return payload({
       asset,
       header,
-      carbonCustomers,
-      carbonErpItemUrl,
+      customers,
     });
   } catch (cause) {
     const reason = makeShelfError(cause);
@@ -360,8 +344,7 @@ export const links: LinksFunction = () => [
 ];
 
 export default function AssetDetailsPage() {
-  const { asset, carbonCustomers, carbonErpItemUrl } =
-    useLoaderData<typeof loader>();
+  const { asset, customers } = useLoaderData<typeof loader>();
 
   const { roles, isCustomer } = useUserRoleHelper();
   const canAssignCustomer = userHasPermission({
@@ -433,27 +416,13 @@ export default function AssetDetailsPage() {
           <ActionsDropdown />
         </When>
         <BookingActionsDropdown />
-        {carbonErpItemUrl ? (
-          <Button
-            to={carbonErpItemUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            variant="secondary"
-            size="sm"
-          >
-            <span className="inline-flex items-center gap-1.5">
-              Open in Carbon
-              <ExternalLink className="size-3.5" />
-            </span>
-          </Button>
-        ) : null}
       </Header>
       <HorizontalTabs items={items} />
       {canAssignCustomer && !isCustomer ? (
         <CustomerAssignmentCard
           assetId={asset.id}
-          currentCarbonCustomerId={asset.carbonCustomerId}
-          carbonCustomers={carbonCustomers}
+          currentCustomerId={asset.customerId}
+          customers={customers}
         />
       ) : null}
       <div>
@@ -465,27 +434,25 @@ export default function AssetDetailsPage() {
 
 /**
  * Inline card on the asset detail page that lets staff assign or clear
- * which Carbon customer this asset is stored for. Submits to the existing
+ * which customer this asset is stored for. Submits to the existing
  * `/api/customers/assign-assets` endpoint (intent `assign-customer`,
  * `assetIds = [this asset]`). On success the loader revalidates and the
  * card re-renders with the new selection.
  */
 function CustomerAssignmentCard({
   assetId,
-  currentCarbonCustomerId,
-  carbonCustomers,
+  currentCustomerId,
+  customers,
 }: {
   assetId: string;
-  currentCarbonCustomerId: string | null;
-  carbonCustomers: { id: string; name: string }[];
+  currentCustomerId: string | null;
+  customers: { id: string; name: string }[];
 }) {
   const [open, setOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<string>(
-    currentCarbonCustomerId ?? ""
-  );
+  const [selectedId, setSelectedId] = useState<string>(currentCustomerId ?? "");
 
   const selectedCustomer = selectedId
-    ? carbonCustomers.find((c) => c.id === selectedId)
+    ? customers.find((c) => c.id === selectedId)
     : null;
   const triggerLabel = selectedCustomer
     ? selectedCustomer.name
@@ -493,10 +460,10 @@ function CustomerAssignmentCard({
     ? `(unknown customer — id ${selectedId})`
     : "— Not assigned (Fieldkit-owned) —";
 
-  const currentCustomer = currentCarbonCustomerId
-    ? carbonCustomers.find((c) => c.id === currentCarbonCustomerId)
+  const currentCustomer = currentCustomerId
+    ? customers.find((c) => c.id === currentCustomerId)
     : null;
-  const hasChanges = selectedId !== (currentCarbonCustomerId ?? "");
+  const hasChanges = selectedId !== (currentCustomerId ?? "");
 
   return (
     <div className="my-4 rounded border border-gray-200 bg-white p-4 md:p-6">
@@ -506,10 +473,10 @@ function CustomerAssignmentCard({
             Stored for customer
           </h3>
           <p className="text-xs text-gray-500">
-            {currentCarbonCustomerId
+            {currentCustomerId
               ? `Currently assigned to ${
                   currentCustomer?.name ??
-                  "(unknown customer — id " + currentCarbonCustomerId + ")"
+                  "(unknown customer — id " + currentCustomerId + ")"
                 }.`
               : "Not assigned — this asset is currently Fieldkit-owned inventory."}
           </p>
@@ -522,7 +489,7 @@ function CustomerAssignmentCard({
       >
         <input type="hidden" name="intent" value="assign-customer" />
         <input type="hidden" name="assetIds" value={assetId} />
-        <input type="hidden" name="carbonCustomerId" value={selectedId} />
+        <input type="hidden" name="customerId" value={selectedId} />
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <button
@@ -570,7 +537,7 @@ function CustomerAssignmentCard({
                         Not assigned (Fieldkit-owned)
                       </span>
                     </CommandItem>
-                    {carbonCustomers.map((c) => (
+                    {customers.map((c) => (
                       <CommandItem
                         key={c.id}
                         value={c.name}

@@ -372,7 +372,7 @@ export async function getPaginatedAndFilterableKits<
    * CUSTOMER-role tenancy filter. For non-CUSTOMER roles the caller should
    * pass `{}` (or the result of `buildCustomerKitScope(perm)`, which returns
    * `{}` for non-customers). For CUSTOMER users this is a `KitWhereInput`
-   * fragment of shape `{ OR: [{ carbonCustomerId: ... }, { carbonCustomerId: null, rentable: true }] }`
+   * fragment of shape `{ OR: [{ customerId: ... }, { customerId: null, rentable: true }] }`
    * that limits results to the customer's own kits + Fieldkit's rentable pool.
    *
    * AND-merged into the query alongside search/status/teamMember filters so

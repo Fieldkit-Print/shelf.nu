@@ -19,7 +19,11 @@ import Input from "~/components/forms/input";
 import Header from "~/components/layout/header";
 import { Button } from "~/components/shared/button";
 import { useDisabled } from "~/hooks/use-disabled";
-import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
+import {
+  centsToDollars,
+  dollarsToCents,
+  moneyDollarsSchema,
+} from "~/modules/pricing/format";
 import {
   getOrgPricing,
   upsertOrgPricing,
@@ -27,6 +31,7 @@ import {
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
 import { makeShelfError } from "~/utils/error";
+import { getValidationErrors } from "~/utils/http";
 import {
   assertIsPost,
   error,
@@ -46,10 +51,18 @@ import { requirePermission } from "~/utils/roles.server";
  * multipliers go through the same string-or-empty pattern.
  */
 const PricingFormSchema = z.object({
-  storagePerDayDollars: z.string().optional(),
-  pickDollars: z.string().optional(),
-  returnDollars: z.string().optional(),
-  rentalPerDayDollars: z.string().optional(),
+  /**
+   * Monthly rate per occupied pallet position, one per slot tier. Storage is
+   * sold by the position per month — there is no daily rate on the rate card.
+   * OVERSIZE is absent by design: it is quoted per slot on the location
+   * itself, since custom footprints have no standard price.
+   */
+  storageHalfPalletDollars: moneyDollarsSchema,
+  storageStandardPalletDollars: moneyDollarsSchema,
+  storageTallPalletDollars: moneyDollarsSchema,
+  pickDollars: moneyDollarsSchema,
+  returnDollars: moneyDollarsSchema,
+  rentalPerDayDollars: moneyDollarsSchema,
   rentalLossMultiplier: z.string().optional(),
   consumableMarkupPct: z.string().optional(),
   currencyCode: z
@@ -125,7 +138,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
     await upsertOrgPricing({
       organizationId,
       patch: {
-        storagePerDayCents: dollarsToCents(parsed.storagePerDayDollars),
+        storageHalfPalletCents: dollarsToCents(parsed.storageHalfPalletDollars),
+        storageStandardPalletCents: dollarsToCents(
+          parsed.storageStandardPalletDollars
+        ),
+        storageTallPalletCents: dollarsToCents(parsed.storageTallPalletDollars),
         pickCents: dollarsToCents(parsed.pickDollars),
         returnCents: dollarsToCents(parsed.returnDollars),
         rentalPerDayCents: dollarsToCents(parsed.rentalPerDayDollars),
@@ -154,6 +171,11 @@ export default function PricingSettings() {
   const actionData = useActionData<DataOrErrorResponse>();
   const disabled = useDisabled();
 
+  /** This handles server side errors in case client side validation fails */
+  const validationErrors = getValidationErrors<typeof PricingFormSchema>(
+    actionData?.error
+  );
+
   // Render the action's error message at the top of the form when present.
   const generalError = actionData?.error?.message;
 
@@ -180,16 +202,51 @@ export default function PricingSettings() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
               <Input
-                label="Storage / day"
-                name="storagePerDayDollars"
-                defaultValue={centsToDollars(pricing?.storagePerDayCents)}
+                label="Storage / month — half pallet"
+                name="storageHalfPalletDollars"
+                defaultValue={centsToDollars(pricing?.storageHalfPalletCents)}
                 type="number"
                 step="0.01"
                 min="0"
                 placeholder="0.00"
+                error={validationErrors?.storageHalfPalletDollars?.message}
               />
               <p className="mt-1 text-xs text-gray-500">
-                Per customer-owned asset in storage, per day.
+                48&times;40 footprint, under 2 ft tall. Per occupied position,
+                per month.
+              </p>
+            </div>
+            <div>
+              <Input
+                label="Storage / month — standard pallet"
+                name="storageStandardPalletDollars"
+                defaultValue={centsToDollars(
+                  pricing?.storageStandardPalletCents
+                )}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="0.00"
+                error={validationErrors?.storageStandardPalletDollars?.message}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                48&times;40 footprint, up to 4 ft tall.
+              </p>
+            </div>
+            <div>
+              <Input
+                label="Storage / month — tall pallet"
+                name="storageTallPalletDollars"
+                defaultValue={centsToDollars(pricing?.storageTallPalletCents)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="0.00"
+                error={validationErrors?.storageTallPalletDollars?.message}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                48&times;40 footprint, over 4 ft tall. Oversize and custom
+                footprints are priced per slot on the location itself.
               </p>
             </div>
             <div>

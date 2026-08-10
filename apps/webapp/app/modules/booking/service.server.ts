@@ -1,7 +1,6 @@
-import { BookingStatus, AssetStatus, KitStatus } from "@prisma/client";
+import { BookingStatus, AssetStatus, KitStatus, Prisma } from "@prisma/client";
 import type {
   Booking,
-  Prisma,
   Organization,
   Asset,
   Kit,
@@ -100,7 +99,11 @@ import {
   isBookingExpired,
 } from "./utils.server";
 import { recordEvent, recordEvents } from "../activity-event/service.server";
-import { recordPick, recordReturn } from "../billing/events.server";
+import {
+  groupAssetsIntoPallets,
+  recordPick,
+  recordReturn,
+} from "../billing/events.server";
 import { createSystemBookingNote } from "../booking-note/service.server";
 import { createNotes } from "../note/service.server";
 import { resolveFlatRateCents } from "../pricing/resolver.server";
@@ -109,6 +112,37 @@ import { TAG_WITH_COLOR_SELECT } from "../tag/constants";
 import { getUserByID } from "../user/service.server";
 
 const label: ErrorLabel = "Booking";
+
+/**
+ * Verifies that every tag being connected to a booking belongs to the given
+ * organization. Connecting tags purely by `{ id }` would otherwise let a
+ * crafted request associate another org's tag with a booking.
+ *
+ * @param tags - The tags to connect (as `{ id }` refs).
+ * @param organizationId - The organization the booking belongs to.
+ * @throws {ShelfError} When any tag id is missing from the organization.
+ */
+async function assertBookingTagsBelongToOrg(
+  tags: { id: string }[],
+  organizationId: string
+) {
+  if (tags.length === 0) return;
+  const tagIds = tags.map((t) => t.id);
+  const validTagCount = await db.tag.count({
+    where: { id: { in: tagIds }, organizationId },
+  });
+  if (validTagCount !== tagIds.length) {
+    throw new ShelfError({
+      cause: null,
+      message:
+        "Some of the selected tags don't exist in this workspace. Please refresh and try again.",
+      additionalData: { organizationId },
+      label,
+      status: 400,
+      shouldBeCaptured: false,
+    });
+  }
+}
 
 /**
  * Sends a booking email to all resolved notification recipients.
@@ -633,6 +667,8 @@ export async function updateBasicBooking({
     // (for custodian change scenarios)
     const oldCustodianEmail = booking.custodianUser?.email;
 
+    await assertBookingTagsBelongToOrg(tags, organizationId);
+
     const dataToUpdate: Prisma.BookingUpdateInput = {
       name,
       description,
@@ -992,9 +1028,20 @@ export async function reserveBooking({
         });
       });
 
-    /** Server-side conflict validation to prevent race conditions */
-    if (from && to && bookingFound.assets) {
-      const conflictedAssets = bookingFound.assets.filter((asset) =>
+    /**
+     * Throws a "Booking conflict" error if any of the given assets is already
+     * booked/checked out for this window. Shared by the fast pre-check below
+     * and the authoritative re-check performed inside the row-locked
+     * transaction, so the message stays identical.
+     */
+    const assertNoReservationConflicts = (
+      assets: {
+        title: string;
+        status: string;
+        bookings?: { id: string; status: string }[];
+      }[]
+    ) => {
+      const conflictedAssets = assets.filter((asset) =>
         hasAssetBookingConflicts(asset, id)
       );
 
@@ -1016,6 +1063,15 @@ export async function reserveBooking({
           shouldBeCaptured: false,
         });
       }
+    };
+
+    /**
+     * Fast pre-check for a good error before we acquire any locks. The
+     * authoritative check runs inside the transaction below — this read and
+     * the status write must not straddle a race window.
+     */
+    if (from && to && bookingFound.assets) {
+      assertNoReservationConflicts(bookingFound.assets);
     }
 
     /** Validate the booking dates */
@@ -1044,6 +1100,8 @@ export async function reserveBooking({
         message: "Booking end date should be after start date.",
       });
     }
+
+    await assertBookingTagsBelongToOrg(tags, organizationId);
 
     const dataToUpdate: Prisma.BookingUpdateInput = {
       status: BookingStatus.RESERVED,
@@ -1098,9 +1156,42 @@ export async function reserveBooking({
       });
     }
 
-    const updatedBooking = await db.booking.update({
-      where: { id: bookingFound.id },
-      data: dataToUpdate,
+    const assetIdsForLock = bookingFound.assets?.map((asset) => asset.id) ?? [];
+
+    const updatedBooking = await db.$transaction(async (tx) => {
+      /**
+       * Serialize concurrent reservations of the same assets. We lock the
+       * asset rows, then re-run the conflict check inside the lock: any
+       * conflicting booking committed by a concurrent request is now visible,
+       * so two overlapping reservations can no longer both pass the check and
+       * double-book an asset.
+       */
+      if (assetIdsForLock.length > 0 && from && to) {
+        await tx.$queryRaw`SELECT id FROM "Asset" WHERE id IN (${Prisma.join(
+          assetIdsForLock
+        )}) FOR UPDATE`;
+
+        const assetsWithConflicts = await tx.asset.findMany({
+          where: { id: { in: assetIdsForLock } },
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            bookings: createBookingConflictConditions({
+              currentBookingId: id,
+              fromDate: from,
+              toDate: to,
+            }),
+          },
+        });
+
+        assertNoReservationConflicts(assetsWithConflicts);
+      }
+
+      return tx.booking.update({
+        where: { id: bookingFound.id },
+        data: dataToUpdate,
+      });
     });
 
     /** Calculate the time difference between the booking.to and the current time */
@@ -1234,9 +1325,19 @@ export async function checkoutBooking({
         });
       });
 
-    /** Server-side conflict validation to prevent race conditions */
-    if (from && to && bookingFound.assets) {
-      const conflictedAssets = bookingFound.assets.filter((asset) =>
+    /**
+     * Throws a conflict error if any of the given assets is already
+     * booked/checked out for this window. Shared by the fast pre-check below
+     * and the authoritative re-check inside the row-locked transaction.
+     */
+    const assertNoCheckoutConflicts = (
+      assets: {
+        title: string;
+        status: string;
+        bookings?: { id: string; status: string }[];
+      }[]
+    ) => {
+      const conflictedAssets = assets.filter((asset) =>
         hasAssetBookingConflicts(asset, id)
       );
 
@@ -1256,6 +1357,11 @@ export async function checkoutBooking({
           message: `Cannot check out booking. Some assets are already booked or checked out: ${conflictedAssetNames}${additionalText}. Please remove conflicted assets and try again.`,
         });
       }
+    };
+
+    /** Fast pre-check for a good error before we acquire any locks. */
+    if (from && to && bookingFound.assets) {
+      assertNoCheckoutConflicts(bookingFound.assets);
     }
 
     /** Server-side validation: Block checkout if any assets are in custody */
@@ -1327,9 +1433,39 @@ export async function checkoutBooking({
      * This prevents P2028 timeouts on bookings with many assets.
      *
      * Using callback-form transaction to include activity events atomically. */
+    const assetIdsForCheckout = bookingFound.assets.map((a) => a.id);
+
     await db.$transaction(async (tx) => {
+      /**
+       * Serialize concurrent checkouts of the same assets: lock the asset
+       * rows and re-run the conflict check inside the lock so a booking that
+       * became RESERVED/ONGOING for these assets in a concurrent request is
+       * visible before we flip them to CHECKED_OUT.
+       */
+      if (assetIdsForCheckout.length > 0 && from && to) {
+        await tx.$queryRaw`SELECT id FROM "Asset" WHERE id IN (${Prisma.join(
+          assetIdsForCheckout
+        )}) FOR UPDATE`;
+
+        const assetsWithConflicts = await tx.asset.findMany({
+          where: { id: { in: assetIdsForCheckout } },
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            bookings: createBookingConflictConditions({
+              currentBookingId: id,
+              fromDate: from,
+              toDate: to,
+            }),
+          },
+        });
+
+        assertNoCheckoutConflicts(assetsWithConflicts);
+      }
+
       await tx.asset.updateMany({
-        where: { id: { in: bookingFound.assets.map((a) => a.id) } },
+        where: { id: { in: assetIdsForCheckout } },
         data: { status: AssetStatus.CHECKED_OUT },
       });
 
@@ -1362,30 +1498,35 @@ export async function checkoutBooking({
           tx
         );
 
-        // Billing — PICK event per customer-owned asset. Resolves the rate
-        // at write time via the asset → customer → org hierarchy so the
-        // stored amountCents reflects the price as of checkout, even if
-        // tiers change later. Fieldkit-owned assets (carbonCustomerId
-        // IS NULL) are skipped — no customer to bill for picking a rental.
-        for (const asset of bookingFound.assets) {
-          if (!asset.carbonCustomerId) continue;
+        // Billing — one PICK per pallet position, not per asset. The rate
+        // card charges a flat fee "per pallet, per shipment", so a position
+        // holding fifty cartons is a single pick. Fieldkit-owned assets are
+        // dropped by the grouping — no customer to bill for our own stock.
+        //
+        // Emitted inside `tx` so a rolled-back checkout takes the charges
+        // with it, and keyed on (booking, pallet) so a repeated check-out
+        // is a no-op rather than a second bill.
+        const pickedPallets = groupAssetsIntoPallets(bookingFound.assets);
+        for (const pallet of pickedPallets) {
           const resolved = await resolveFlatRateCents({
             organizationId,
-            carbonCustomerId: asset.carbonCustomerId,
-            assetId: asset.id,
+            customerId: pallet.customerId,
             kind: "PICK",
           });
           if (!resolved) continue;
-          await recordPick({
-            organizationId,
-            carbonCustomerId: asset.carbonCustomerId,
-            assetId: asset.id,
-            carbonPartId: null,
-            locationId: null,
-            occurredAt: new Date(),
-            amountCents: resolved.amountCents,
-            currencyCode: resolved.currencyCode,
-          });
+          await recordPick(
+            {
+              organizationId,
+              customerId: pallet.customerId,
+              bookingId: bookingFound.id,
+              locationId: pallet.locationId,
+              assetId: pallet.assetId,
+              occurredAt: new Date(),
+              amountCents: resolved.amountCents,
+              currencyCode: resolved.currencyCode,
+            },
+            tx
+          );
         }
       }
     });
@@ -1520,10 +1661,12 @@ export async function checkinBooking({
               kitId: true,
               status: true,
               // Billing emission needs these to pick billable assets and
-              // resolve rates. carbonCustomerId/rentable/kind drive the
+              // resolve rates. customerId/rentable/kind drive the
               // filter; valuation feeds RENTAL_LOSS / CONSUMABLE_USE math.
+              // locationId is the pallet position handling is billed on.
               kind: true,
-              carbonCustomerId: true,
+              customerId: true,
+              locationId: true,
               rentable: true,
               valuation: true,
               bookings: {
@@ -1717,27 +1860,39 @@ export async function checkinBooking({
             tx
           );
 
-          // Billing — RETURN event per customer-owned asset coming back
-          // to storage. Same pricing-resolution pattern as PICK above.
-          for (const asset of bookingFound.assets) {
-            if (!asset.carbonCustomerId) continue;
+          // Billing — one RETURN per pallet position actually coming back.
+          //
+          // Scoped to `assetsToCheckinSet`, not the whole booking: assets
+          // that stayed CHECKED_OUT because another ongoing booking still
+          // holds them have not been returned, and billing them here would
+          // charge twice for one physical return once that booking closes.
+          //
+          // Inside `tx` and keyed on (booking, pallet), same as PICK.
+          const returnedPallets = groupAssetsIntoPallets(
+            bookingFound.assets.filter((asset) =>
+              assetsToCheckinSet.has(asset.id)
+            )
+          );
+          for (const pallet of returnedPallets) {
             const resolved = await resolveFlatRateCents({
               organizationId,
-              carbonCustomerId: asset.carbonCustomerId,
-              assetId: asset.id,
+              customerId: pallet.customerId,
               kind: "RETURN",
             });
             if (!resolved) continue;
-            await recordReturn({
-              organizationId,
-              carbonCustomerId: asset.carbonCustomerId,
-              assetId: asset.id,
-              carbonPartId: null,
-              locationId: null,
-              occurredAt: new Date(),
-              amountCents: resolved.amountCents,
-              currencyCode: resolved.currencyCode,
-            });
+            await recordReturn(
+              {
+                organizationId,
+                customerId: pallet.customerId,
+                bookingId: bookingFound.id,
+                locationId: pallet.locationId,
+                assetId: pallet.assetId,
+                occurredAt: new Date(),
+                amountCents: resolved.amountCents,
+                currencyCode: resolved.currencyCode,
+              },
+              tx
+            );
           }
         }
 
@@ -2105,11 +2260,63 @@ export async function partialCheckinBooking({
     }
 
     const updatedBooking = await db.$transaction(async (tx) => {
-      // Update the status of checked-in assets to AVAILABLE
-      await tx.asset.updateMany({
-        where: { id: { in: assetIds } },
-        data: { status: AssetStatus.AVAILABLE },
+      // An asset shared across overlapping bookings (i.e. double-booked) must
+      // NOT be freed to AVAILABLE while another active booking still holds it
+      // checked out. Full check-in already guards this; partial check-in must
+      // too, otherwise partially checking in booking A silently frees an asset
+      // that booking B still has out. We only flip to AVAILABLE the assets no
+      // other ONGOING/OVERDUE booking is still holding (accounting for that
+      // other booking's own partial check-ins).
+      const otherActiveBookings = await tx.booking.findMany({
+        where: {
+          id: { not: id },
+          status: { in: [BookingStatus.ONGOING, BookingStatus.OVERDUE] },
+          assets: { some: { id: { in: assetIds } } },
+        },
+        select: {
+          id: true,
+          assets: { where: { id: { in: assetIds } }, select: { id: true } },
+        },
       });
+
+      const otherBookingIds = otherActiveBookings.map((b) => b.id);
+      const otherPartialCheckins =
+        otherBookingIds.length > 0
+          ? await tx.partialBookingCheckin.findMany({
+              where: { bookingId: { in: otherBookingIds } },
+              select: { bookingId: true, assetIds: true },
+            })
+          : [];
+      const checkedInByOtherBooking = new Map<string, Set<string>>();
+      otherPartialCheckins.forEach((checkin) => {
+        const set =
+          checkedInByOtherBooking.get(checkin.bookingId) ?? new Set<string>();
+        checkin.assetIds.forEach((assetId) => set.add(assetId));
+        checkedInByOtherBooking.set(checkin.bookingId, set);
+      });
+
+      // Assets still held by another active booking that hasn't checked them in.
+      const stillHeldElsewhere = new Set<string>();
+      otherActiveBookings.forEach((booking) => {
+        const alreadyCheckedIn = checkedInByOtherBooking.get(booking.id);
+        booking.assets.forEach((asset) => {
+          if (!alreadyCheckedIn || !alreadyCheckedIn.has(asset.id)) {
+            stillHeldElsewhere.add(asset.id);
+          }
+        });
+      });
+
+      const assetIdsToMakeAvailable = assetIds.filter(
+        (assetId) => !stillHeldElsewhere.has(assetId)
+      );
+
+      // Update the status of checked-in assets to AVAILABLE
+      if (assetIdsToMakeAvailable.length > 0) {
+        await tx.asset.updateMany({
+          where: { id: { in: assetIdsToMakeAvailable } },
+          data: { status: AssetStatus.AVAILABLE },
+        });
+      }
 
       // Only update kit status for kits that are completely checked in
       if (completeKitIds.length > 0) {
@@ -3182,7 +3389,7 @@ export async function getBookings(params: {
    * `~/utils/permissions/customer-scope.server`. For non-CUSTOMER roles this
    * is `{}` and acts as a no-op. For CUSTOMER users it restricts results to
    * bookings where the user is the creator OR the custodian — bookings made
-   * by other contacts at the same Carbon customer remain hidden by default
+   * by other contacts at the same customer remain hidden by default
    * (use `buildCustomerBookingScope` extensions to broaden if needed).
    *
    * AND-merged into the query so it composes with search, date, and status

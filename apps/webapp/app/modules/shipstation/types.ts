@@ -47,7 +47,7 @@ export type ShipstationOrder = {
 };
 
 export type ShipstationCustomer = {
-  /** Stable id for the customer — we use the Carbon customer id. */
+  /** Stable id for the customer. */
   customerCode: string;
   /**
    * Both BillTo and ShipTo are populated with the same structured address
@@ -74,7 +74,7 @@ export type ShipstationAddress = {
 };
 
 export type ShipstationItem = {
-  /** Shelf sequential id (e.g. "SAM-0024") or carbonPartId fallback. */
+  /** Shelf sequential id (e.g. "SAM-0024") . */
   sku: string;
   /** Display name — "<item.name> #<serial>" for INSTANCE rows. */
   name: string;

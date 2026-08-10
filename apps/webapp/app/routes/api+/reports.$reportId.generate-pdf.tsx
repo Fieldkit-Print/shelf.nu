@@ -39,7 +39,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { requirePermission } from "~/utils/roles.server";
+import { assertNotCustomer, requirePermission } from "~/utils/roles.server";
 
 /**
  * Format return status for PDF - matches the CSV export format.
@@ -94,12 +94,18 @@ export const loader = async ({
   );
 
   try {
-    const { organizationId } = await requirePermission({
+    const perm = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.asset,
       action: PermissionAction.read,
     });
+
+    // Report helpers have no customer scoping — `customerId` appears
+    // nowhere in them — so a customer here would see the whole org's
+    // inventory, custody and compliance data. Deny until scoped.
+    assertNotCustomer(perm, "report exports");
+    const { organizationId } = perm;
 
     // Validate report exists
     const reportDef = getReportById(reportId);

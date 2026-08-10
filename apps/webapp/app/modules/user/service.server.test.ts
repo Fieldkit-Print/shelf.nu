@@ -1,4 +1,4 @@
-import { Roles, AssetIndexMode, OrganizationRoles } from "@prisma/client";
+import { Roles, OrganizationRoles } from "@prisma/client";
 
 import { matchRequestUrl, http, HttpResponse } from "msw";
 import { server } from "@mocks";
@@ -21,9 +21,7 @@ import { USER_WITH_SSO_DETAILS_SELECT } from "./fields";
 import {
   createUserAccountForTesting,
   createUserOrAttachOrg,
-  defaultUserCategories,
 } from "./service.server";
-import { defaultFields } from "../asset-index-settings/helpers";
 
 // @vitest-environment node
 // 👋 see https://vitest.dev/guide/environment.html#environments-for-specific-files
@@ -250,38 +248,8 @@ describe(createUserAccountForTesting.name, () => {
         firstName: undefined,
         lastName: undefined,
         createdWithInvite: undefined,
-        // After the last changes because of SSO we dont need this anymore
-        organizations: {
-          create: [
-            {
-              name: "Personal",
-              hasSequentialIdsMigrated: true, // New personal organizations don't need migration
-              categories: {
-                create: defaultUserCategories.map((c) => ({
-                  ...c,
-                  userId: USER_ID,
-                })),
-              },
-              members: {
-                create: {
-                  name: "(Owner)",
-                  user: { connect: { id: USER_ID } },
-                },
-              },
-              assetIndexSettings: {
-                create: {
-                  mode: AssetIndexMode.ADVANCED,
-                  columns: defaultFields,
-                  user: {
-                    connect: {
-                      id: USER_ID,
-                    },
-                  },
-                },
-              },
-            },
-          ],
-        },
+        // Fieldkit hardcodes `disableSignup: true`, so no personal org is
+        // created inline — users join only via admin invite.
         roles: {
           connect: {
             name: Roles["USER"],

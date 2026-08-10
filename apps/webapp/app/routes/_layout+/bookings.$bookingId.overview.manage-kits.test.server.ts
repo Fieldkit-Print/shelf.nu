@@ -111,8 +111,9 @@ describe("manage-kits route validation", () => {
     vi.mocked(rolesServer.requirePermission).mockResolvedValue({
       organizationId: "org123",
       isSelfServiceOrBase: false,
+      isStaff: true,
       isCustomer: false,
-      carbonCustomerId: null,
+      customerId: null,
       customerContactPermission: null,
       organizations: [],
       currentOrganization: {} as any,

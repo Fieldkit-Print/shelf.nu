@@ -19,7 +19,7 @@ export function useUserRoleHelper() {
   const isBase = roles?.includes(OrganizationRoles.BASE) || false;
 
   /**
-   * Fieldkit external customer contact (synced from Carbon ERP).
+   * External customer contact.
    * @see project_fieldkit_shelf_tenancy memory
    */
   const isCustomer = roles?.includes(OrganizationRoles.CUSTOMER) || false;

@@ -15,7 +15,6 @@ import {
 
 import chardet from "chardet";
 import { CsvError, parse } from "csv-parse";
-import { format } from "date-fns";
 import iconv from "iconv-lite";
 import { db } from "~/database/db.server";
 import {
@@ -210,10 +209,17 @@ export const buildCsvBackupDataFromAssets = ({
           );
           break;
         case "description":
-          toExport.push(`"${String(value).replace(/\n|\r/g, "")}"`);
+          // Strip newlines then quote/escape so the delimiter and stray
+          // quotes in the description can't shift columns on re-import.
+          toExport.push(
+            escapeCsvBackupField(String(value).replace(/\n|\r/g, ""))
+          );
           break;
         default:
-          toExport.push(String(value));
+          // Quote/escape every scalar field: a value containing the `;`
+          // delimiter or a newline (e.g. a title "Drill; Bosch") would
+          // otherwise shift every following column when re-imported.
+          toExport.push(escapeCsvBackupField(String(value)));
       }
     });
 
@@ -550,12 +556,39 @@ export const formatValueForCsv = (value: any, isMarkdown = false): string => {
     stringValue = cleanMarkdownFormatting(stringValue);
   }
 
+  // Neutralize spreadsheet formula injection: a cell whose first character is
+  // = + - @ (or a leading tab/CR) is evaluated as a formula by Excel/Sheets,
+  // so an asset named `=HYPERLINK(...)` would execute on open. Prefix a single
+  // quote so it renders as literal text. Well-formed numbers are skipped so
+  // legitimate negative values aren't mangled.
+  if (
+    /^[=+\-@\t\r]/.test(stringValue) &&
+    !Number.isFinite(Number(stringValue))
+  ) {
+    stringValue = `'${stringValue}`;
+  }
+
   // Escape quotes by doubling them
   stringValue = stringValue.replace(/"/g, '""');
 
   // Always wrap in quotes
   return `"${stringValue}"`;
 };
+
+/**
+ * Escapes a single field for the assets *backup* CSV (the round-trippable
+ * export consumed by re-import). Wraps the value in double quotes and doubles
+ * any internal quotes so fields containing the `;` delimiter or newlines
+ * survive parsing instead of shifting columns.
+ *
+ * Unlike {@link formatValueForCsv} it does NOT neutralize spreadsheet
+ * formulas: the backup must re-import to the exact stored value.
+ *
+ * @param value - The raw field value (already stringified).
+ * @returns The quote-wrapped, quote-escaped field.
+ */
+const escapeCsvBackupField = (value: string): string =>
+  `"${value.replace(/"/g, '""')}"`;
 
 /**
  * Formats a custom field value specifically for CSV export
@@ -584,7 +617,10 @@ const formatCustomFieldForCsv = (
     case CustomFieldType.DATE:
       if (!fieldValue.valueDate) return "";
       try {
-        return format(new Date(fieldValue.valueDate), "yyyy-MM-dd");
+        // Format against UTC (not the server's local tz) so the exported
+        // calendar date matches the stored value — date-fns `format` would
+        // shift it a day in negative-UTC timezones.
+        return new Date(fieldValue.valueDate).toISOString().split("T")[0];
       } catch {
         return String(fieldValue.raw);
       }

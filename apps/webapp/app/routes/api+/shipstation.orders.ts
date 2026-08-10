@@ -27,6 +27,8 @@ import {
   applyShipnotify,
   parseShipnotify,
 } from "~/modules/shipstation/shipnotify.server";
+import { FIELDKIT_PRIMARY_ORGANIZATION_ID } from "~/utils/env";
+import { ShelfError } from "~/utils/error";
 import { Logger } from "~/utils/logger";
 
 const BASIC_AUTH_REALM = 'Basic realm="Shipstation"';
@@ -55,7 +57,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const end = parseDateParam(url.searchParams.get("end_date"), /* future */ 0);
 
   try {
-    const orders = await listOrdersForExport({ start, end });
+    // Machine integration authenticated by a single global credential, so
+    // there is no session to derive an organization from. Scope to the
+    // Fieldkit org explicitly — without it the store receives every
+    // organization's orders.
+    if (!FIELDKIT_PRIMARY_ORGANIZATION_ID) {
+      throw new ShelfError({
+        cause: null,
+        message:
+          "FIELDKIT_PRIMARY_ORGANIZATION_ID is not set; refusing to export orders unscoped.",
+        label: "Shipstation",
+      });
+    }
+
+    const orders = await listOrdersForExport({
+      start,
+      end,
+      organizationId: FIELDKIT_PRIMARY_ORGANIZATION_ID,
+    });
     const xml = serializeOrdersXml(orders);
     return new Response(xml, {
       status: 200,

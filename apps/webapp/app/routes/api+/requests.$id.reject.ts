@@ -50,12 +50,29 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
       entity: PermissionEntity.booking,
       action: PermissionAction.update,
     });
-    const { isCustomer, carbonCustomerId } = perm;
+    const { isCustomer, customerId, organizationId } = perm;
 
     const bookingRequest = await getBookingRequest(id);
 
+    // Tenancy: the request must belong to the caller's organization. This
+    // gates every caller (including Fieldkit staff) — without it a staff
+    // user with booking-update permission in one org could reject another
+    // org's request.
+    if (bookingRequest.organizationId !== organizationId) {
+      throw new ShelfError({
+        cause: null,
+        label: "BookingRequest",
+        title: "Booking request not found",
+        message:
+          "The booking request you are trying to access does not exist or you do not have permission to access it.",
+        additionalData: { id },
+        status: 404,
+        shouldBeCaptured: false,
+      });
+    }
+
     // Tenancy: same as approve — CUSTOMER callers must match the request's customer.
-    if (isCustomer && bookingRequest.carbonCustomerId !== carbonCustomerId) {
+    if (isCustomer && bookingRequest.customerId !== customerId) {
       throw new ShelfError({
         cause: null,
         label: "BookingRequest",

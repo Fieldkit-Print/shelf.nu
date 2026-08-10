@@ -18,6 +18,7 @@ import {
   createLocation,
   updateLocationImage,
 } from "~/modules/location/service.server";
+import { dollarsToCents } from "~/modules/pricing/format";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
 import { makeShelfError } from "~/utils/error";
@@ -101,6 +102,9 @@ export async function action({ context, request }: ActionFunctionArgs) {
       addAnother,
       parentId,
       preventRedirect,
+      storageSlotTier,
+      capacity,
+      storageMonthlyOverrideDollars,
     } = parsedData;
 
     const location = await createLocation({
@@ -110,6 +114,11 @@ export async function action({ context, request }: ActionFunctionArgs) {
       userId: authSession.userId,
       organizationId,
       parentId,
+      storageSlotTier,
+      capacity,
+      storageMonthlyCentsOverride: dollarsToCents(
+        storageMonthlyOverrideDollars
+      ),
     });
 
     await updateLocationImage({

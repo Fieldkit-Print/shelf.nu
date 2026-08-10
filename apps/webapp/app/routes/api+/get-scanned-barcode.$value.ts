@@ -26,6 +26,10 @@ import {
   BARCODE_INCLUDE,
   KIT_INCLUDE,
 } from "~/utils/scanner-includes.server";
+import {
+  sanitizeAssetExtraInclude,
+  sanitizeKitExtraInclude,
+} from "./utils/scanned-item-include.server";
 
 // Export types for barcode scanning
 export type AssetFromBarcode = AssetFromScanner;
@@ -102,16 +106,30 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
       auditSessionId?: string;
     };
 
+    // Sanitize the client-supplied includes against a server-side allowlist:
+    // spreading the raw JSON would let any caller pull arbitrary related
+    // records or force expensive nested queries.
+    const safeAssetExtraInclude = sanitizeAssetExtraInclude(assetExtraInclude);
+    const safeKitExtraInclude = sanitizeKitExtraInclude(kitExtraInclude);
+
     const include = {
       ...BARCODE_INCLUDE,
 
       // Include additional data based on search params. This will override the default includes
       ...(assetExtraInclude
-        ? { asset: { include: { ...ASSET_INCLUDE, ...assetExtraInclude } } }
+        ? {
+            asset: {
+              include: { ...ASSET_INCLUDE, ...(safeAssetExtraInclude ?? {}) },
+            },
+          }
         : undefined),
 
       ...(kitExtraInclude
-        ? { kit: { include: { ...KIT_INCLUDE, ...kitExtraInclude } } }
+        ? {
+            kit: {
+              include: { ...KIT_INCLUDE, ...(safeKitExtraInclude ?? {}) },
+            },
+          }
         : undefined),
     };
 

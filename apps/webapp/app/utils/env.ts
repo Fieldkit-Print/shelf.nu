@@ -64,24 +64,8 @@ declare global {
       SHOW_HOW_DID_YOU_FIND_US: string;
       COLLECT_BUSINESS_INTEL: string;
       COOKIE_DOMAIN: string;
-      // Fieldkit ↔ Carbon ERP integration (carbon-sync module).
-      //
-      // Carbon exposes a public REST API at /api/* on its ERP app, scoped
-      // per company via API keys (`carbon-key` header). We use the
-      // sales-permission API key for customer + customerContact reads.
-      //
-      // Webhooks are configured in Carbon's Settings → Webhooks UI and
-      // arrive here with no auth header — we authenticate via a query-string
-      // token (CARBON_WEBHOOK_SECRET) and filter by FIELDKIT_CARBON_COMPANY_ID
-      // so payloads from other Carbon tenants are rejected.
-      CARBON_API_BASE_URL: string;
-      CARBON_API_KEY: string;
-      CARBON_ERP_BASE_URL: string;
-      CARBON_WEBHOOK_SECRET: string;
-      FIELDKIT_CARBON_COMPANY_ID: string;
-      // Single shelf organization that hosts customer tenancy. The carbon-sync
-      // module upserts every Carbon customer under this org id. Required when
-      // any of the CARBON_* vars above are set.
+      // Single organization that hosts customer tenancy. The billing crons
+      // scope their storage/rental passes to this org id.
       FIELDKIT_PRIMARY_ORGANIZATION_ID: string;
       // Shipstation Custom Store basic-auth credentials. Configured on
       // Shipstation's side under Settings → Stores → "Custom Store" with
@@ -90,6 +74,11 @@ declare global {
       // Shipstation traffic.
       SHIPSTATION_BASIC_AUTH_USERNAME: string;
       SHIPSTATION_BASIC_AUTH_PASSWORD: string;
+      // Productive.io API credentials. Productive is the system of record for
+      // customer master data (synced into `Customer`) and the destination for
+      // monthly storage/handling charges.
+      PRODUCTIVE_API_TOKEN: string;
+      PRODUCTIVE_ORGANIZATION_ID: string;
     }
   }
 }
@@ -204,47 +193,6 @@ export const DIRECT_URL = getEnv("DIRECT_URL", {
   isRequired: false,
 });
 
-/**
- * Fieldkit ↔ Carbon ERP integration.
- *
- * Carbon exposes a public REST API on its ERP app (e.g.
- * `https://erp.fieldkit.cc/api/sales/customers`). We authenticate with a
- * scoped API key sent in the `carbon-key` header — issue one in Carbon
- * Settings → API Keys with the `view: sales` permission scoped to
- * Fieldkit's company.
- *
- * Webhooks come in the other direction: Carbon's UI (Settings → Webhooks)
- * fires events at our endpoint with no auth header — we authenticate via
- * a query-string `?token=` matched against `CARBON_WEBHOOK_SECRET`, and
- * filter by `FIELDKIT_CARBON_COMPANY_ID` to reject events from other
- * Carbon tenants.
- *
- * All five are optional during dev/CI; the carbon-sync module fails fast
- * when called without them so misconfigured deploys are loud.
- */
-export const CARBON_API_BASE_URL = getEnv("CARBON_API_BASE_URL", {
-  isRequired: false,
-})?.replace(/\/+$/, "");
-/**
- * User-facing Carbon ERP URL (the React app, distinct from the REST API).
- * Used to render staff-only "Open in Carbon" deep links on Shelf detail
- * pages — eg. `${CARBON_ERP_BASE_URL}/x/part/${carbonPartId}`. Optional;
- * the button just doesn't render when this is unset.
- */
-export const CARBON_ERP_BASE_URL = getEnv("CARBON_ERP_BASE_URL", {
-  isRequired: false,
-})?.replace(/\/+$/, "");
-export const CARBON_API_KEY = getEnv("CARBON_API_KEY", {
-  isSecret: true,
-  isRequired: false,
-});
-export const CARBON_WEBHOOK_SECRET = getEnv("CARBON_WEBHOOK_SECRET", {
-  isSecret: true,
-  isRequired: false,
-});
-export const FIELDKIT_CARBON_COMPANY_ID = getEnv("FIELDKIT_CARBON_COMPANY_ID", {
-  isRequired: false,
-});
 export const FIELDKIT_PRIMARY_ORGANIZATION_ID = getEnv(
   "FIELDKIT_PRIMARY_ORGANIZATION_ID",
   { isRequired: false }
@@ -263,6 +211,24 @@ export const SHIPSTATION_BASIC_AUTH_PASSWORD = getEnv(
   "SHIPSTATION_BASIC_AUTH_PASSWORD",
   { isSecret: true, isRequired: false }
 );
+
+/**
+ * Productive.io API credentials.
+ *
+ * Productive is the system of record for customers — the sync pulls its
+ * companies into the local `Customer` mirror — and the destination for
+ * monthly storage and handling charges, pushed as budget services.
+ *
+ * Issued under Settings → API integrations. The token needs read access to
+ * companies and read/write on deals and services.
+ */
+export const PRODUCTIVE_API_TOKEN = getEnv("PRODUCTIVE_API_TOKEN", {
+  isSecret: true,
+  isRequired: false,
+});
+export const PRODUCTIVE_ORGANIZATION_ID = getEnv("PRODUCTIVE_ORGANIZATION_ID", {
+  isRequired: false,
+});
 export const SENTRY_DSN = getEnv("SENTRY_DSN", {
   isSecret: false,
   isRequired: false,

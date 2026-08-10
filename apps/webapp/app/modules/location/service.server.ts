@@ -670,10 +670,19 @@ export async function createLocation({
   userId,
   organizationId,
   parentId,
+  storageSlotTier,
+  capacity,
+  storageMonthlyCentsOverride,
 }: Pick<Location, "description" | "name" | "address"> & {
   userId: User["id"];
   organizationId: Organization["id"];
   parentId?: Location["parentId"];
+  /** Storage classification. Null = organizational location, never billed. */
+  storageSlotTier?: Location["storageSlotTier"];
+  /** Max assets this location may hold. Null = unlimited. */
+  capacity?: Location["capacity"];
+  /** Per-slot monthly price override, in cents. */
+  storageMonthlyCentsOverride?: Location["storageMonthlyCentsOverride"];
 }) {
   try {
     // Geocode the address if provided
@@ -696,6 +705,9 @@ export async function createLocation({
           address,
           latitude: coordinates?.lat || null,
           longitude: coordinates?.lon || null,
+          storageSlotTier: storageSlotTier ?? null,
+          capacity: capacity ?? null,
+          storageMonthlyCentsOverride: storageMonthlyCentsOverride ?? null,
           user: {
             connect: {
               id: userId,
@@ -777,9 +789,25 @@ export async function updateLocation(payload: {
   userId: User["id"];
   organizationId: Organization["id"];
   parentId?: Location["parentId"];
+  /** Storage classification. Null = organizational location, never billed. */
+  storageSlotTier?: Location["storageSlotTier"];
+  /** Max assets this location may hold. Null = unlimited. */
+  capacity?: Location["capacity"];
+  /** Per-slot monthly price override, in cents. */
+  storageMonthlyCentsOverride?: Location["storageMonthlyCentsOverride"];
 }) {
-  const { id, name, address, description, userId, organizationId, parentId } =
-    payload;
+  const {
+    id,
+    name,
+    address,
+    description,
+    userId,
+    organizationId,
+    parentId,
+    storageSlotTier,
+    capacity,
+    storageMonthlyCentsOverride,
+  } = payload;
 
   try {
     // Get the current location to check for changes
@@ -827,6 +855,14 @@ export async function updateLocation(payload: {
           name: name?.trim(),
           description,
           address,
+          // Storage fields are always present on the full-page form, so an
+          // undefined here means the caller (e.g. the inline quick-create
+          // dialog) doesn't manage them — leave the existing value alone.
+          ...(storageSlotTier !== undefined && { storageSlotTier }),
+          ...(capacity !== undefined && { capacity }),
+          ...(storageMonthlyCentsOverride !== undefined && {
+            storageMonthlyCentsOverride,
+          }),
           ...(shouldUpdateCoordinates && {
             latitude: coordinates?.lat || null,
             longitude: coordinates?.lon || null,

@@ -162,13 +162,8 @@ export const Role2PermissionMap: {
     [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.ADMIN]: {
-    // Fieldkit FDW edition: `create` on asset is intentionally omitted.
-    // New Shelf assets are provisioned by Carbon (item webhooks for
-    // CONSUMABLE rows, and a future Carbon-calls-Shelf API for INSTANCE
-    // rows). The `/assets/new` route returns 403 as a result. `import` is
-    // retained for one-off bulk loads (migration, ad-hoc customer-stored
-    // gear not in Carbon's catalog).
     [PermissionEntity.asset]: [
+      PermissionAction.create,
       PermissionAction.read,
       PermissionAction.update,
       PermissionAction.delete,
@@ -306,11 +301,13 @@ export const Role2PermissionMap: {
     [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
     [PermissionEntity.customer]: [
       PermissionAction.read,
+      PermissionAction.create,
       PermissionAction.update,
+      PermissionAction.delete,
     ],
   },
   /**
-   * CUSTOMER role: external customer contact synced from Carbon ERP.
+   * CUSTOMER role: external customer contact.
    *
    * Scoping note: this map only governs *what entity actions are allowed*.
    * The hard isolation of "this customer can only see their own assets" is
@@ -325,14 +322,26 @@ export const Role2PermissionMap: {
   [OrganizationRoles.CUSTOMER]: {
     [PermissionEntity.asset]: [PermissionAction.read],
     [PermissionEntity.assetIndexSettings]: [PermissionAction.read],
+    /**
+     * Customers submit BookingRequests; staff turn those into Bookings. A
+     * customer therefore needs to read their own bookings and cancel them,
+     * and nothing more.
+     *
+     * `delete`, `manageAssets` and `manageKits` were previously granted with
+     * a comment claiming "own draft bookings only" — nothing enforced that,
+     * and combined with the ownership check skipping CUSTOMER it let a portal
+     * user delete or restrip any booking in the organization. `update` is
+     * gone for the same reason: the booking edit path has no customer-facing
+     * use and carried the same escalation.
+     *
+     * `create` stays because the request-approval flow creates the booking as
+     * the requester; it is further gated by canRequestShipment /
+     * canRentInventory at the route layer.
+     */
     [PermissionEntity.booking]: [
       PermissionAction.create, // Gated further by canRequestShipment / canRentInventory
       PermissionAction.read,
-      PermissionAction.update,
-      PermissionAction.delete, // Own draft bookings only.
       PermissionAction.cancel,
-      PermissionAction.manageAssets,
-      PermissionAction.manageKits,
     ],
     [PermissionEntity.bookingNote]: [
       PermissionAction.read,
@@ -369,8 +378,8 @@ export const Role2PermissionMap: {
     [PermissionEntity.customer]: [],
   },
   [OrganizationRoles.OWNER]: {
-    // Fieldkit FDW edition: `create` removed; see ADMIN block above.
     [PermissionEntity.asset]: [
+      PermissionAction.create,
       PermissionAction.read,
       PermissionAction.update,
       PermissionAction.delete,
@@ -510,7 +519,9 @@ export const Role2PermissionMap: {
     [PermissionEntity.commandPaletteSearch]: [PermissionAction.read],
     [PermissionEntity.customer]: [
       PermissionAction.read,
+      PermissionAction.create,
       PermissionAction.update,
+      PermissionAction.delete,
     ],
   },
 };

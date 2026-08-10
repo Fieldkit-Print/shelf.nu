@@ -75,6 +75,8 @@ export type FailureReason = {
     | "File storage"
     | "Scan"
     | "Scheduler"
+    | "Productive"
+    | "Shipstation"
     | "Stripe"
     | "Stripe webhook"
     | "Subscription"
@@ -104,11 +106,9 @@ export type FailureReason = {
     | "Audit"
     | "Activity"
     | "Update"
-    // Fieldkit ↔ Carbon ERP integration (carbon-sync module)
-    | "Carbon Sync"
-    // Fieldkit customer-portal request/approval flow
+    // Customer-portal request/approval flow
     | "BookingRequest"
-    // Fieldkit pricing / billing resolution
+    // Pricing / billing resolution
     | "Pricing"
     | "Billing";
   /**

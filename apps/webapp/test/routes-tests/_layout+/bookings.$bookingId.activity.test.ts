@@ -96,8 +96,9 @@ describe("bookings.$bookingId.activity action — organization scoping", () => {
     vi.mocked(rolesServer.requirePermission).mockResolvedValue({
       organizationId: "org-attacker",
       isSelfServiceOrBase: false,
+      isStaff: true,
       isCustomer: false,
-      carbonCustomerId: null,
+      customerId: null,
       customerContactPermission: null,
       organizations: [],
       currentOrganization: {} as any,

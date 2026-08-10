@@ -27,6 +27,10 @@ import {
   QR_INCLUDE,
 } from "~/utils/scanner-includes.server";
 import { parseSequentialId } from "~/utils/sequential-id";
+import {
+  sanitizeAssetExtraInclude,
+  sanitizeKitExtraInclude,
+} from "./utils/scanned-item-include.server";
 
 // Re-export types for backward compatibility
 export type AssetFromQr = AssetFromScanner;
@@ -44,7 +48,7 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
       entity: PermissionEntity.qr,
       action: PermissionAction.read,
     });
-    const { organizationId, isCustomer, carbonCustomerId } = perm;
+    const { organizationId, isCustomer, customerId } = perm;
 
     /**
      * Returns true if a CUSTOMER user is allowed to see this asset's data.
@@ -52,25 +56,25 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
      * For non-CUSTOMER roles, returns true unconditionally.
      */
     const assetVisibleToCustomer = (asset: {
-      carbonCustomerId: string | null;
+      customerId: string | null;
       rentable: boolean;
     }) => {
       if (!isCustomer) return true;
-      if (asset.carbonCustomerId === carbonCustomerId) return true;
-      return asset.carbonCustomerId === null && asset.rentable === true;
+      if (asset.customerId === customerId) return true;
+      return asset.customerId === null && asset.rentable === true;
     };
 
     /**
      * Same predicate for kits (mirrors Asset semantics — kits also have
-     * carbonCustomerId + rentable fields).
+     * customerId + rentable fields).
      */
     const kitVisibleToCustomer = (kit: {
-      carbonCustomerId: string | null;
+      customerId: string | null;
       rentable: boolean;
     }) => {
       if (!isCustomer) return true;
-      if (kit.carbonCustomerId === carbonCustomerId) return true;
-      return kit.carbonCustomerId === null && kit.rentable === true;
+      if (kit.customerId === customerId) return true;
+      return kit.customerId === null && kit.rentable === true;
     };
 
     /**
@@ -128,14 +132,17 @@ export async function loader({ request, params, context }: LoaderFunctionArgs) {
       auditSessionId?: string;
     };
 
+    // Sanitize the client-supplied includes against a server-side allowlist:
+    // spreading the raw JSON would let any caller pull arbitrary related
+    // records or force expensive nested queries.
     const assetInclude: Prisma.AssetInclude = {
       ...ASSET_INCLUDE,
-      ...(assetExtraInclude ?? {}),
+      ...(sanitizeAssetExtraInclude(assetExtraInclude) ?? {}),
     };
 
     const kitInclude: Prisma.KitInclude = {
       ...KIT_INCLUDE,
-      ...(kitExtraInclude ?? {}),
+      ...(sanitizeKitExtraInclude(kitExtraInclude) ?? {}),
     };
 
     const sequentialId = parseSequentialId(qrId);

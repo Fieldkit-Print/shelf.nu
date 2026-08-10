@@ -2,6 +2,8 @@ import type { CustomerContactPermission, SsoDetails } from "@prisma/client";
 import { OrganizationRoles, Roles } from "@prisma/client";
 import { db } from "~/database/db.server";
 import { getSelectedOrganization } from "~/modules/organization/context.server";
+import { isStaffRole } from "./booking-authorization.server";
+import { ENABLE_PREMIUM_FEATURES } from "./env";
 import { ShelfError } from "./error";
 import type {
   PermissionAction,
@@ -91,40 +93,33 @@ export async function requirePermission({
   const isCustomer = role === OrganizationRoles.CUSTOMER;
 
   /**
-   * Customer-tenancy linkage (Fieldkit only, FDW edition).
+   * Customer-tenancy linkage.
    *
-   * For CUSTOMER role users we resolve the linked `carbonCustomerId` here
-   * so every downstream query can scope correctly. Without this id the
-   * caller would either (a) leak other customers' data or (b) return
-   * nothing at all — both worse than failing fast.
-   *
-   * Customer master data (status, archivedAt) lives in Carbon and is read
-   * via the `carbon_remote.v1_customers` foreign view by callers that need
-   * it. We do not block sign-in here on archived state — that check moves
-   * to the route-level loader where FDW reads happen — because doing it
-   * inside `requirePermission()` would make every staff request couple to
-   * Carbon's availability.
+   * For CUSTOMER role users we resolve the linked `customerId` here so every
+   * downstream query can scope correctly. Without this id the caller would
+   * either (a) leak other customers' data or (b) return nothing at all — both
+   * worse than failing fast.
    *
    * Non-customer roles skip this block entirely (zero extra queries).
    */
-  let carbonCustomerId: string | null = null;
+  let customerId: string | null = null;
   let customerContactPermission: CustomerContactPermission | null = null;
 
   if (isCustomer) {
     const customerUser = await db.user.findUnique({
       where: { id: userId },
       select: {
-        carbonCustomerId: true,
+        fieldkitCustomerId: true,
         customerContactPermission: true,
       },
     });
 
-    if (!customerUser?.carbonCustomerId) {
+    if (!customerUser?.fieldkitCustomerId) {
       throw new ShelfError({
         cause: null,
         title: "Customer account not linked",
         message:
-          "Your account is not linked to a customer record. Please contact Fieldkit support.",
+          "Your account is not linked to a customer record. Please contact support.",
         additionalData: { userId, organizationId },
         label: "Permission",
         status: 403,
@@ -132,7 +127,7 @@ export async function requirePermission({
       });
     }
 
-    carbonCustomerId = customerUser.carbonCustomerId;
+    customerId = customerUser.fieldkitCustomerId;
     customerContactPermission = customerUser.customerContactPermission;
   }
 
@@ -169,11 +164,17 @@ export async function requirePermission({
       (role === OrganizationRoles.BASE &&
         currentOrganization.baseUserCanSeeCustody);
 
-  // Determine if user can use barcodes based on organization settings
-  const canUseBarcodes = currentOrganization.barcodesEnabled ?? false;
+  // Add-on flags only gate when there is a paid tier to buy them from. With
+  // premium off there is no billing, so treating the flag as authoritative
+  // makes these features permanently unreachable. Matches `canUseBarcodes` /
+  // `canUseAudits` in utils/subscription.server.ts, which already did this.
+  const canUseBarcodes = ENABLE_PREMIUM_FEATURES
+    ? currentOrganization.barcodesEnabled ?? false
+    : true;
 
-  // Determine if user can use audits based on organization settings
-  const canUseAudits = currentOrganization.auditsEnabled ?? false;
+  const canUseAudits = ENABLE_PREMIUM_FEATURES
+    ? currentOrganization.auditsEnabled ?? false
+    : true;
 
   return {
     organizations,
@@ -181,8 +182,17 @@ export async function requirePermission({
     currentOrganization,
     role,
     isSelfServiceOrBase,
+    /**
+     * True only for Fieldkit staff (ADMIN / OWNER).
+     *
+     * Use this instead of `!isSelfServiceOrBase`. That negation predates the
+     * CUSTOMER role and returns true for customers, which is how portal users
+     * ended up bypassing booking time-limit validation and receiving the
+     * org's admin roster in loader payloads.
+     */
+    isStaff: isStaffRole(role),
     isCustomer,
-    carbonCustomerId,
+    customerId,
     customerContactPermission,
     userOrganizations,
     canSeeAllBookings,
@@ -199,6 +209,38 @@ export async function requirePermission({
  * a strongly-typed permission context without re-listing the fields.
  */
 export type PermissionContext = Awaited<ReturnType<typeof requirePermission>>;
+
+/**
+ * Denies CUSTOMER-role users outright.
+ *
+ * For surfaces that are staff-only but happen to be gated on a permission
+ * customers legitimately hold. Reports are the motivating case: they are
+ * gated on `asset:read` "as a proxy", and the report helpers contain no
+ * customer scoping whatsoever — `customerId` appears nowhere in them — so a
+ * customer reaching `/reports/custody-snapshot` would see the whole
+ * organization's inventory, custody and compliance data. The sidebar hides
+ * the link, which is cosmetic.
+ *
+ * Use this until a surface is genuinely scoped, not as a substitute for
+ * scoping it.
+ *
+ * @throws {ShelfError} 403 when the caller is a customer contact.
+ */
+export function assertNotCustomer(
+  perm: Pick<PermissionContext, "isCustomer">,
+  what = "this page"
+): void {
+  if (perm.isCustomer) {
+    throw new ShelfError({
+      cause: null,
+      title: "Not available",
+      message: `You don't have access to ${what}.`,
+      label: "Permission",
+      status: 403,
+      shouldBeCaptured: false,
+    });
+  }
+}
 
 /** Gets the role needed for SSO login from the groupID returned by the SSO claims */
 export function getRoleFromGroupId(
