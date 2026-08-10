@@ -50,11 +50,22 @@ type CustomerDefaultLocation = {
 export async function listOrdersForExport(args: {
   start: Date;
   end: Date;
+  /**
+   * Organization whose orders to export.
+   *
+   * Required. The endpoint authenticates with a single global basic-auth
+   * credential and has no per-org key, so without this filter the one
+   * configured Shipstation store received every organization's approved
+   * requests — customer names, ship-to addresses, requester emails and asset
+   * titles included.
+   */
+  organizationId: string;
 }): Promise<ShipstationOrder[]> {
-  const { start, end } = args;
+  const { start, end, organizationId } = args;
 
   const requests = await db.bookingRequest.findMany({
     where: {
+      organizationId,
       status: { in: ["APPROVED", "CANCELLED"] },
       updatedAt: { gte: start, lte: end },
     },
@@ -84,7 +95,7 @@ export async function listOrdersForExport(args: {
   // distinct customers in this window and join in memory.
   const customerIds = Array.from(new Set(requests.map((r) => r.customerId)));
   const customers = await db.customer.findMany({
-    where: { id: { in: customerIds } },
+    where: { id: { in: customerIds }, organizationId },
     select: {
       id: true,
       name: true,

@@ -75,6 +75,8 @@ export type FailureReason = {
     | "File storage"
     | "Scan"
     | "Scheduler"
+    | "Productive"
+    | "Shipstation"
     | "Stripe"
     | "Stripe webhook"
     | "Subscription"

@@ -2,9 +2,13 @@ import { TagUseFor } from "@prisma/client";
 import { data, type LoaderFunctionArgs } from "react-router";
 import { z } from "zod";
 import { db } from "~/database/db.server";
-import { getSelectedOrganization } from "~/modules/organization/context.server";
-import { makeShelfError } from "~/utils/error";
+import { makeShelfError, ShelfError } from "~/utils/error";
 import { payload, error, parseData } from "~/utils/http.server";
+import {
+  PermissionAction,
+  PermissionEntity,
+} from "~/utils/permissions/permission.data";
+import { requirePermission } from "~/utils/roles.server";
 
 const BasicModelFilters = z.object({
   /** key of field for which we have to filter values */
@@ -58,10 +62,38 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
   const { userId } = authSession;
 
   try {
-    const { organizationId } = await getSelectedOrganization({
+    /**
+     * This endpoint had no permission check at all — only organization
+     * membership — while returning whole rows for seven models. A customer
+     * portal user could enumerate every asset, booking, location and kit in
+     * the org, and `name=teamMember` handed back the full staff roster with
+     * email addresses.
+     *
+     * It backs filter dropdowns, so `teamMember:read` is the right gate: the
+     * roles that get filter UI have it, and CUSTOMER / BASE / SELF_SERVICE
+     * hold an empty action list for that entity.
+     */
+    const { organizationId, isCustomer } = await requirePermission({
       userId,
       request,
+      entity: PermissionEntity.teamMember,
+      action: PermissionAction.read,
     });
+
+    /**
+     * Defence in depth. The permission map already denies CUSTOMER, but this
+     * endpoint is a broad read primitive over seven models and a future map
+     * change shouldn't silently reopen it.
+     */
+    if (isCustomer) {
+      throw new ShelfError({
+        cause: null,
+        message: "Not authorized.",
+        label: "Permission",
+        status: 403,
+        shouldBeCaptured: false,
+      });
+    }
 
     /** Getting all the query parameters from url */
     const url = new URL(request.url);
@@ -143,6 +175,10 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
 
     const queryData = (await db[name].dynamicFindMany({
       where,
+      // `dynamicFindMany` is an unbounded passthrough and an empty
+      // `queryValue` matches every row. This endpoint feeds type-ahead
+      // dropdowns, so a page of results is all it ever needs.
+      take: 100,
       include:
         /** We need user's information to resolve teamMember's name */
         name === "teamMember"

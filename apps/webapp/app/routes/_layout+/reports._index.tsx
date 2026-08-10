@@ -27,7 +27,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { requirePermission } from "~/utils/roles.server";
+import { assertNotCustomer, requirePermission } from "~/utils/roles.server";
 import { tw } from "~/utils/tw";
 
 export const meta: MetaFunction<typeof loader> = ({ data }) => [
@@ -40,12 +40,17 @@ export async function loader({ context, request }: LoaderFunctionArgs) {
 
   // For now, require asset read permission as a proxy
   // TODO: Add PermissionEntity.reports when schema is updated
-  await requirePermission({
+  const perm = await requirePermission({
     userId,
     request,
     entity: PermissionEntity.asset,
     action: PermissionAction.read,
   });
+
+  // Report helpers have no customer scoping — `customerId` appears
+  // nowhere in them — so a customer here would see the whole org's
+  // inventory, custody and compliance data. Deny until scoped.
+  assertNotCustomer(perm, "reports");
 
   const reportsByCategory = getReportsByCategory();
 

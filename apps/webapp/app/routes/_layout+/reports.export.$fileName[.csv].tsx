@@ -42,7 +42,7 @@ import {
   PermissionAction,
   PermissionEntity,
 } from "~/utils/permissions/permission.data";
-import { requirePermission } from "~/utils/roles.server";
+import { assertNotCustomer, requirePermission } from "~/utils/roles.server";
 
 export const loader = async ({
   context,
@@ -53,12 +53,18 @@ export const loader = async ({
   const { userId } = authSession;
 
   try {
-    const { organizationId } = await requirePermission({
+    const perm = await requirePermission({
       userId,
       request,
       entity: PermissionEntity.asset,
       action: PermissionAction.export,
     });
+
+    // Report helpers have no customer scoping — `customerId` appears
+    // nowhere in them — so a customer here would see the whole org's
+    // inventory, custody and compliance data. Deny until scoped.
+    assertNotCustomer(perm, "report exports");
+    const { organizationId } = perm;
 
     const searchParams = getCurrentSearchParams(request);
     const reportId = searchParams.get("reportId");
