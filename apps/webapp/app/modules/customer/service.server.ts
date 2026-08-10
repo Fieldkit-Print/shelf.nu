@@ -262,48 +262,10 @@ export type CustomerUpsertPatch = {
   shipToCountry?: string | null;
 };
 
-/**
- * Creates a new customer in the organization.
- *
- * @param args.organizationId - The owning organization
- * @param args.patch - Customer fields; `name` is required
- * @returns The created Customer
- * @throws {ShelfError} When `name` is missing
- */
-export async function createCustomer(args: {
-  organizationId: string;
-  patch: CustomerUpsertPatch;
-}) {
-  const { organizationId, patch } = args;
-  if (!patch.name?.trim()) {
-    throw new ShelfError({
-      cause: null,
-      title: "Name required",
-      message: "A customer must have a name.",
-      label: "Organization",
-      status: 400,
-      additionalData: { organizationId },
-      shouldBeCaptured: false,
-    });
-  }
-
-  return db.customer.create({
-    data: {
-      organizationId,
-      name: patch.name.trim(),
-      billingEmail: patch.billingEmail ?? null,
-      notes: patch.notes ?? null,
-      requiresInternalApproval: patch.requiresInternalApproval ?? false,
-      shipToName: patch.shipToName ?? null,
-      shipToStreet1: patch.shipToStreet1 ?? null,
-      shipToStreet2: patch.shipToStreet2 ?? null,
-      shipToCity: patch.shipToCity ?? null,
-      shipToState: patch.shipToState ?? null,
-      shipToPostalCode: patch.shipToPostalCode ?? null,
-      shipToCountry: patch.shipToCountry ?? null,
-    },
-  });
-}
+// Customers are not created in Shelf. Productive is the system of record for
+// customer master data, and `modules/productive/sync.server.ts` mirrors it in.
+// A `createCustomer` here would let a row exist with no `productiveCompanyId`,
+// which the billing push cannot attribute and would silently skip.
 
 /**
  * Updates a customer's editable fields. Scoped to the organization so a

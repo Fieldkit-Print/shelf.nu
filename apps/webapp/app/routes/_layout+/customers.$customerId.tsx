@@ -35,8 +35,13 @@ import {
 } from "~/modules/customer/service.server";
 
 import { createInvite } from "~/modules/invite/service.server";
-import { centsToDollars, dollarsToCents } from "~/modules/pricing/format";
 import {
+  centsToDollars,
+  dollarsToCents,
+  moneyDollarsSchema,
+} from "~/modules/pricing/format";
+import {
+  assertCustomerBelongsToOrg,
   getCustomerPricing,
   upsertCustomerPricing,
 } from "~/modules/pricing/service.server";
@@ -97,10 +102,17 @@ const CustomerDetailsPatchSchema = z.object({
  */
 const CustomerPricingPatchSchema = z.object({
   intent: z.literal("customer-pricing"),
-  storagePerDayDollars: z.string().optional(),
-  pickDollars: z.string().optional(),
-  returnDollars: z.string().optional(),
-  rentalPerDayDollars: z.string().optional(),
+  /**
+   * Per-customer monthly rate per pallet position, by tier. Blank falls
+   * through to the org rate. Storage has no per-day rate — it is sold by the
+   * position per month.
+   */
+  storageHalfPalletDollars: moneyDollarsSchema,
+  storageStandardPalletDollars: moneyDollarsSchema,
+  storageTallPalletDollars: moneyDollarsSchema,
+  pickDollars: moneyDollarsSchema,
+  returnDollars: moneyDollarsSchema,
+  rentalPerDayDollars: moneyDollarsSchema,
   rentalLossMultiplier: z.string().optional(),
   consumableMarkupPct: z.string().optional(),
   currencyCode: z
@@ -225,6 +237,12 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         senderId: userId,
       });
     } else if (intent === "customer-pricing") {
+      // `upsertCustomerPricing` matches on customerId alone, so its update
+      // branch would overwrite another organization's negotiated rates if the
+      // id came from outside this workspace. The sibling `customer-details`
+      // branch is scoped via `updateCustomer`; this one had no equivalent.
+      await assertCustomerBelongsToOrg({ customerId, organizationId });
+
       const payload = parseData(formData, CustomerPricingPatchSchema, {
         additionalData: { customerId },
       });
@@ -244,7 +262,15 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
         organizationId,
         customerId,
         patch: {
-          storagePerDayCents: dollarsToCents(payload.storagePerDayDollars),
+          storageHalfPalletCents: dollarsToCents(
+            payload.storageHalfPalletDollars
+          ),
+          storageStandardPalletCents: dollarsToCents(
+            payload.storageStandardPalletDollars
+          ),
+          storageTallPalletCents: dollarsToCents(
+            payload.storageTallPalletDollars
+          ),
           pickCents: dollarsToCents(payload.pickDollars),
           returnCents: dollarsToCents(payload.returnDollars),
           rentalPerDayCents: dollarsToCents(payload.rentalPerDayDollars),
@@ -422,9 +448,29 @@ export default function CustomerDetailPage() {
             <input type="hidden" name="intent" value="customer-pricing" />
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <Input
-                label="Storage / day ($)"
-                name="storagePerDayDollars"
-                defaultValue={centsToDollars(pricing?.storagePerDayCents)}
+                label="Storage / month — half pallet ($)"
+                name="storageHalfPalletDollars"
+                defaultValue={centsToDollars(pricing?.storageHalfPalletCents)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Storage / month — standard pallet ($)"
+                name="storageStandardPalletDollars"
+                defaultValue={centsToDollars(
+                  pricing?.storageStandardPalletCents
+                )}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="(use default)"
+              />
+              <Input
+                label="Storage / month — tall pallet ($)"
+                name="storageTallPalletDollars"
+                defaultValue={centsToDollars(pricing?.storageTallPalletCents)}
                 type="number"
                 step="0.01"
                 min="0"

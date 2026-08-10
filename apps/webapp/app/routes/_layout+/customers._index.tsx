@@ -4,16 +4,20 @@
  * Lists the org's customers with Shelf-side counters (number of contact
  * Users, number of stored Assets).
  *
+ * Read-only mirror: customers are created in Productive and pulled in by the
+ * sync, so there is no create action here. The "Sync from Productive" button
+ * triggers that pull on demand; a nightly cron does the same at 02:30 UTC.
+ *
  * Permissions: ADMIN/OWNER only — see Role2PermissionMap entry for
  * `PermissionEntity.customer`.
  *
  * @see {@link file://./customers.$customerId.tsx} Detail page
- * @see {@link file://./customers.new.tsx} Create page
+ * @see {@link file://./../../modules/productive/sync.server.ts} Customer mirror
  * @see {@link file://./../../modules/customer/service.server.ts} Data layer
  */
 
 import type { LoaderFunctionArgs, MetaFunction } from "react-router";
-import { data, Link, useLoaderData } from "react-router";
+import { data, Link, useFetcher, useLoaderData } from "react-router";
 
 import Header from "~/components/layout/header";
 import type { HeaderData } from "~/components/layout/header/types";
@@ -80,6 +84,9 @@ export default function CustomersIndex() {
   const { customers, search, total, page, perPage } =
     useLoaderData<typeof loader>();
 
+  const syncFetcher = useFetcher();
+  const syncing = syncFetcher.state !== "idle";
+
   const totalPages = Math.max(1, Math.ceil(total / perPage));
 
   return (
@@ -106,12 +113,21 @@ export default function CustomersIndex() {
             <div className="text-xs text-gray-500">
               {total} customer{total === 1 ? "" : "s"}
             </div>
-            <Link
-              to="/customers/new"
-              className="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white"
-            >
-              New customer
-            </Link>
+            {/*
+              No "New customer" action: Productive is the system of record for
+              customer master data, and this table is a read-only mirror of it.
+              Create the company in Productive, then sync.
+            */}
+            <syncFetcher.Form method="post" action="/api/productive/admin">
+              <input type="hidden" name="intent" value="sync-customers" />
+              <button
+                type="submit"
+                disabled={syncing}
+                className="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {syncing ? "Syncing…" : "Sync from Productive"}
+              </button>
+            </syncFetcher.Form>
           </div>
         </div>
 

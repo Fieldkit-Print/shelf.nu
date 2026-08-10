@@ -74,6 +74,11 @@ declare global {
       // Shipstation traffic.
       SHIPSTATION_BASIC_AUTH_USERNAME: string;
       SHIPSTATION_BASIC_AUTH_PASSWORD: string;
+      // Productive.io API credentials. Productive is the system of record for
+      // customer master data (synced into `Customer`) and the destination for
+      // monthly storage/handling charges.
+      PRODUCTIVE_API_TOKEN: string;
+      PRODUCTIVE_ORGANIZATION_ID: string;
     }
   }
 }
@@ -206,6 +211,24 @@ export const SHIPSTATION_BASIC_AUTH_PASSWORD = getEnv(
   "SHIPSTATION_BASIC_AUTH_PASSWORD",
   { isSecret: true, isRequired: false }
 );
+
+/**
+ * Productive.io API credentials.
+ *
+ * Productive is the system of record for customers — the sync pulls its
+ * companies into the local `Customer` mirror — and the destination for
+ * monthly storage and handling charges, pushed as budget services.
+ *
+ * Issued under Settings → API integrations. The token needs read access to
+ * companies and read/write on deals and services.
+ */
+export const PRODUCTIVE_API_TOKEN = getEnv("PRODUCTIVE_API_TOKEN", {
+  isSecret: true,
+  isRequired: false,
+});
+export const PRODUCTIVE_ORGANIZATION_ID = getEnv("PRODUCTIVE_ORGANIZATION_ID", {
+  isRequired: false,
+});
 export const SENTRY_DSN = getEnv("SENTRY_DSN", {
   isSecret: false,
   isRequired: false,

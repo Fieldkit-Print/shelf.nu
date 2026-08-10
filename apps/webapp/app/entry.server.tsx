@@ -13,6 +13,7 @@ import { regierAssetWorkers } from "./modules/asset-reminder/worker.server";
 import { registerAuditWorkers } from "./modules/audit/worker.server";
 import { registerBillingWorker } from "./modules/billing/queue.server";
 import { registerBookingWorkers } from "./modules/booking/worker.server";
+import { registerProductiveWorker } from "./modules/productive/queue.server";
 import { ShelfError } from "./utils/error";
 import { Logger } from "./utils/logger";
 import * as schedulerService from "./utils/scheduler.server";
@@ -87,6 +88,18 @@ schedulerService
             new ShelfError({
               cause,
               message: "Something went wrong while registering billing worker.",
+              label: "Scheduler",
+            })
+          );
+        }),
+      registerProductiveWorker()
+        .then(() => console.log("Productive worker registered"))
+        .catch((cause) => {
+          Logger.error(
+            new ShelfError({
+              cause,
+              message:
+                "Something went wrong while registering Productive worker.",
               label: "Scheduler",
             })
           );

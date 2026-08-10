@@ -14,6 +14,9 @@ export enum QueueNames {
   // other. See ~/modules/billing/queue.server.ts.
   billingStorageCronQueue = "billing-storage-cron",
   billingRentalCronQueue = "billing-rental-cron",
+  // Productive integration. Same one-queue-per-schedule rule as above.
+  productiveSyncQueue = "productive-sync-cron",
+  productivePushQueue = "productive-push-cron",
 }
 
 let pgBossInstance!: PgBoss;
