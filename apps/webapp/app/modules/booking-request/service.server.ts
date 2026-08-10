@@ -324,6 +324,22 @@ export async function approveFieldkit(args: {
 
   try {
     const result = await db.$transaction(async (tx) => {
+      /**
+       * Lock the request row before reading its status.
+       *
+       * Without this the status check is a read-check-write at READ
+       * COMMITTED: two staff clearing the shared PENDING_FIELDKIT queue both
+       * saw PENDING_FIELDKIT, both passed the guard, and both created a
+       * Booking. The second update then overwrote `bookingId`, leaving the
+       * first booking orphaned — RESERVED, holding assets, and unreachable
+       * from the request UI.
+       *
+       * `FOR UPDATE` serialises the second transaction behind the first, so
+       * it re-reads the row as APPROVED and the guard below rejects it. Same
+       * approach the reserve/checkout paths already use on assets.
+       */
+      await tx.$queryRaw`SELECT id FROM "BookingRequest" WHERE id = ${requestId} FOR UPDATE`;
+
       const current = await tx.bookingRequest.findUniqueOrThrow({
         where: { id: requestId },
         include: {
@@ -336,7 +352,8 @@ export async function approveFieldkit(args: {
         throw new ShelfError({
           cause: null,
           label,
-          message: `Cannot Fieldkit-approve request in status ${current.status}.`,
+          title: "Already handled",
+          message: `Cannot Fieldkit-approve request in status ${current.status}. Someone may have just actioned it.`,
           additionalData: { requestId, status: current.status },
           shouldBeCaptured: false,
         });
@@ -351,11 +368,69 @@ export async function approveFieldkit(args: {
         }
       }
 
+      /**
+       * Availability check.
+       *
+       * This creates a RESERVED booking directly, bypassing `reserveBooking`
+       * and therefore both of its conflict assertions — so approving a
+       * request for gear already reserved elsewhere silently double-booked
+       * it. The normal UI path refuses that outright.
+       *
+       * Runs inside the same transaction as the create, after the request row
+       * is locked, so a concurrent approval of a *different* request for the
+       * same asset is still caught by the row lock those paths take on assets.
+       */
+      if (allAssetIds.size > 0) {
+        const conflicted = await tx.asset.findMany({
+          where: {
+            id: { in: Array.from(allAssetIds) },
+            bookings: {
+              some: {
+                status: {
+                  in: [
+                    BookingStatus.RESERVED,
+                    BookingStatus.ONGOING,
+                    BookingStatus.OVERDUE,
+                  ],
+                },
+                // Overlap test: existing.from <= proposed.to
+                //            AND existing.to   >= proposed.from
+                from: { lte: current.proposedTo },
+                to: { gte: current.proposedFrom },
+              },
+            },
+          },
+          select: { title: true },
+        });
+
+        if (conflicted.length > 0) {
+          const names = conflicted
+            .slice(0, 3)
+            .map((a) => a.title)
+            .join(", ");
+          const more =
+            conflicted.length > 3 ? ` and ${conflicted.length - 3} more` : "";
+
+          throw new ShelfError({
+            cause: null,
+            label,
+            title: "Booking conflict",
+            message: `Cannot approve. Some requested items are already booked for these dates: ${names}${more}. Adjust the dates or remove those items first.`,
+            additionalData: { requestId, conflicts: conflicted.length },
+            shouldBeCaptured: false,
+          });
+        }
+      }
+
       const booking = await tx.booking.create({
         data: {
           name: `Customer request ${current.id}`,
           status: BookingStatus.RESERVED,
           organizationId: current.organizationId,
+          // The request already knows the customer; carry it onto the booking
+          // so rental billing can attribute the charge without inferring it
+          // from who happened to click the button.
+          customerId: current.customerId,
           creatorId: current.requesterId,
           custodianUserId: current.requesterId,
           from: current.proposedFrom,

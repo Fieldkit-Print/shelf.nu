@@ -1,10 +1,11 @@
 /**
  * Billing — pg-boss worker registration + cron schedules.
  *
- * Two daily cron jobs, each on its OWN queue:
+ * Two cron jobs, each on its OWN queue:
  *
- *   - `billing-storage-cron` — daily storage pass at 03:00 UTC. Emits
- *     STORAGE BillableEvent rows for yesterday.
+ *   - `billing-storage-cron` — monthly, on the 1st at 03:00 UTC. Storage is
+ *     sold per pallet position per month, so this emits one STORAGE event per
+ *     occupied position and backfills any month the cron missed.
  *   - `billing-rental-cron` — daily rental-use pass at 03:15 UTC (offset
  *     from storage so the two passes don't contend on the same DB).
  *
@@ -27,7 +28,7 @@ import { QueueNames, scheduler } from "~/utils/scheduler.server";
 
 import {
   runDailyRentalUseBilling,
-  runDailyStorageBilling,
+  runStorageBillingWithBackfill,
 } from "./storage-billing.server";
 import type { BillingCronJob } from "./types";
 
@@ -37,6 +38,25 @@ import type { BillingCronJob } from "./types";
  * jobs into queues that no longer have workers.
  */
 const LEGACY_SCHEDULED_QUEUES = ["billing-push-queue", "carbon-sync-queue"];
+
+/**
+ * Retry policy for the billing crons.
+ *
+ * pg-boss defaults `retryLimit` to 0, so a transient failure — a pooler blip,
+ * a Productive timeout — dropped the run entirely. Combined with cron never
+ * replaying a missed window, that silently lost a whole billing period with
+ * only a log line to show for it.
+ *
+ * Retries are safe because every emitter is keyed on a deterministic
+ * idempotency key: a partially-completed pass resumes rather than
+ * double-charging. Backoff spaces attempts out so a database still recovering
+ * isn't hammered.
+ */
+const CRON_RETRY = {
+  retryLimit: 3,
+  retryDelay: 300, // seconds
+  retryBackoff: true,
+} as const;
 
 /**
  * Registers the billing cron workers AND their schedules. Idempotent;
@@ -60,22 +80,27 @@ export async function registerBillingWorker() {
   );
   Logger.info("[Billing] Cron workers registered");
 
-  // Storage billing runs daily at 03:00 UTC (after most calendar days
-  // have closed). It bills for "yesterday" — see runDailyStorageBilling.
+  // Storage is sold per pallet position per month, so the pass runs once a
+  // month rather than nightly. Firing on the 1st at 03:00 UTC bills the month
+  // that is beginning: a position occupied on the 1st is charged for the whole
+  // month, matching the rate card, which carries no daily rate.
+  //
+  // Re-running is safe (keyed on location + month), so a manual invocation to
+  // pick up a position added later in the month only adds the missing rows.
   await scheduler.schedule(
     QueueNames.billingStorageCronQueue,
-    "0 3 * * *",
+    "0 3 1 * *",
     { kind: "run-storage-billing" } satisfies BillingCronJob,
-    { tz: "UTC" }
+    { tz: "UTC", ...CRON_RETRY }
   );
-  Logger.info("[Billing] Daily storage cron scheduled (03:00 UTC)");
+  Logger.info("[Billing] Monthly storage cron scheduled (1st, 03:00 UTC)");
 
   // Rental-use billing runs daily at 03:15 UTC.
   await scheduler.schedule(
     QueueNames.billingRentalCronQueue,
     "15 3 * * *",
     { kind: "run-rental-use-billing" } satisfies BillingCronJob,
-    { tz: "UTC" }
+    { tz: "UTC", ...CRON_RETRY }
   );
   Logger.info("[Billing] Daily rental-use cron scheduled (03:15 UTC)");
 
@@ -92,7 +117,10 @@ export async function registerBillingWorker() {
 async function runJob(job: BillingCronJob) {
   switch (job.kind) {
     case "run-storage-billing": {
-      const result = await runDailyStorageBilling();
+      // Backfill-aware: sweeps any month the cron missed, then the current
+      // one. A skipped window is otherwise unrecoverable without hand-written
+      // SQL.
+      const result = await runStorageBillingWithBackfill();
       Logger.info("[Billing] Storage cron complete", result);
       return;
     }

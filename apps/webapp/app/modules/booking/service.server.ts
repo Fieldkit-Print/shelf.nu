@@ -99,7 +99,11 @@ import {
   isBookingExpired,
 } from "./utils.server";
 import { recordEvent, recordEvents } from "../activity-event/service.server";
-import { recordPick, recordReturn } from "../billing/events.server";
+import {
+  groupAssetsIntoPallets,
+  recordPick,
+  recordReturn,
+} from "../billing/events.server";
 import { createSystemBookingNote } from "../booking-note/service.server";
 import { createNotes } from "../note/service.server";
 import { resolveFlatRateCents } from "../pricing/resolver.server";
@@ -1494,29 +1498,35 @@ export async function checkoutBooking({
           tx
         );
 
-        // Billing — PICK event per customer-owned asset. Resolves the rate
-        // at write time via the asset → customer → org hierarchy so the
-        // stored amountCents reflects the price as of checkout, even if
-        // tiers change later. Fieldkit-owned assets (customerId
-        // IS NULL) are skipped — no customer to bill for picking a rental.
-        for (const asset of bookingFound.assets) {
-          if (!asset.customerId) continue;
+        // Billing — one PICK per pallet position, not per asset. The rate
+        // card charges a flat fee "per pallet, per shipment", so a position
+        // holding fifty cartons is a single pick. Fieldkit-owned assets are
+        // dropped by the grouping — no customer to bill for our own stock.
+        //
+        // Emitted inside `tx` so a rolled-back checkout takes the charges
+        // with it, and keyed on (booking, pallet) so a repeated check-out
+        // is a no-op rather than a second bill.
+        const pickedPallets = groupAssetsIntoPallets(bookingFound.assets);
+        for (const pallet of pickedPallets) {
           const resolved = await resolveFlatRateCents({
             organizationId,
-            customerId: asset.customerId,
-            assetId: asset.id,
+            customerId: pallet.customerId,
             kind: "PICK",
           });
           if (!resolved) continue;
-          await recordPick({
-            organizationId,
-            customerId: asset.customerId,
-            assetId: asset.id,
-            locationId: null,
-            occurredAt: new Date(),
-            amountCents: resolved.amountCents,
-            currencyCode: resolved.currencyCode,
-          });
+          await recordPick(
+            {
+              organizationId,
+              customerId: pallet.customerId,
+              bookingId: bookingFound.id,
+              locationId: pallet.locationId,
+              assetId: pallet.assetId,
+              occurredAt: new Date(),
+              amountCents: resolved.amountCents,
+              currencyCode: resolved.currencyCode,
+            },
+            tx
+          );
         }
       }
     });
@@ -1653,8 +1663,10 @@ export async function checkinBooking({
               // Billing emission needs these to pick billable assets and
               // resolve rates. customerId/rentable/kind drive the
               // filter; valuation feeds RENTAL_LOSS / CONSUMABLE_USE math.
+              // locationId is the pallet position handling is billed on.
               kind: true,
               customerId: true,
+              locationId: true,
               rentable: true,
               valuation: true,
               bookings: {
@@ -1848,26 +1860,39 @@ export async function checkinBooking({
             tx
           );
 
-          // Billing — RETURN event per customer-owned asset coming back
-          // to storage. Same pricing-resolution pattern as PICK above.
-          for (const asset of bookingFound.assets) {
-            if (!asset.customerId) continue;
+          // Billing — one RETURN per pallet position actually coming back.
+          //
+          // Scoped to `assetsToCheckinSet`, not the whole booking: assets
+          // that stayed CHECKED_OUT because another ongoing booking still
+          // holds them have not been returned, and billing them here would
+          // charge twice for one physical return once that booking closes.
+          //
+          // Inside `tx` and keyed on (booking, pallet), same as PICK.
+          const returnedPallets = groupAssetsIntoPallets(
+            bookingFound.assets.filter((asset) =>
+              assetsToCheckinSet.has(asset.id)
+            )
+          );
+          for (const pallet of returnedPallets) {
             const resolved = await resolveFlatRateCents({
               organizationId,
-              customerId: asset.customerId,
-              assetId: asset.id,
+              customerId: pallet.customerId,
               kind: "RETURN",
             });
             if (!resolved) continue;
-            await recordReturn({
-              organizationId,
-              customerId: asset.customerId,
-              assetId: asset.id,
-              locationId: null,
-              occurredAt: new Date(),
-              amountCents: resolved.amountCents,
-              currencyCode: resolved.currencyCode,
-            });
+            await recordReturn(
+              {
+                organizationId,
+                customerId: pallet.customerId,
+                bookingId: bookingFound.id,
+                locationId: pallet.locationId,
+                assetId: pallet.assetId,
+                occurredAt: new Date(),
+                amountCents: resolved.amountCents,
+                currencyCode: resolved.currencyCode,
+              },
+              tx
+            );
           }
         }
 

@@ -4,9 +4,9 @@
  * Public surface for the billing event ledger:
  *
  *   - Recording physical events: {@link recordBillableEvent} and per-kind
- *     wrappers (`recordStorageDay`, `recordPick`, `recordReturn`,
+ *     wrappers (`recordStorageMonth`, `recordPick`, `recordReturn`,
  *     `recordRentalUseDay`, `recordRentalLoss`, `recordConsumableUse`).
- *   - Daily storage pass: {@link runDailyStorageBilling}.
+ *   - Monthly storage pass: {@link runStorageBillingWithBackfill}.
  *   - Worker registration: {@link registerBillingWorker}.
  */
 
@@ -19,9 +19,12 @@ export {
   recordRentalLoss,
   recordRentalUseDay,
   recordReturn,
-  recordStorageDay,
+  recordStorageMonth,
 } from "./events.server";
 
-export { runDailyStorageBilling } from "./storage-billing.server";
+export {
+  runMonthlyStorageBilling,
+  runStorageBillingWithBackfill,
+} from "./storage-billing.server";
 
 export { registerBillingWorker } from "./queue.server";

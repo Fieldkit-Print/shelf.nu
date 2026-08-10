@@ -21,6 +21,70 @@ import { ShelfError } from "~/utils/error";
 
 const label = "Pricing" as const;
 
+/**
+ * Throws unless the asset belongs to the organization.
+ *
+ * `AssetPricing` is keyed solely on `assetId` and carries no organization of
+ * its own, so a route that trusts a URL param has nothing downstream to catch
+ * a foreign id. Since every user is OWNER of their personal workspace and
+ * therefore holds `asset:update` somewhere, the permission check alone does
+ * not establish ownership of *this* asset.
+ *
+ * @throws {ShelfError} 404 when the asset is not in the organization.
+ */
+export async function assertAssetBelongsToOrg(args: {
+  assetId: string;
+  organizationId: string;
+}) {
+  const asset = await db.asset.findFirst({
+    where: { id: args.assetId, organizationId: args.organizationId },
+    select: { id: true },
+  });
+
+  if (!asset) {
+    throw new ShelfError({
+      cause: null,
+      title: "Asset not found",
+      message: "This asset doesn't exist in your workspace.",
+      label,
+      status: 404,
+      additionalData: args,
+      shouldBeCaptured: true,
+    });
+  }
+}
+
+/**
+ * Throws unless the customer belongs to the organization.
+ *
+ * `upsertCustomerPricing` matches on `customerId` alone, so its update branch
+ * will happily overwrite another organization's negotiated rates if the id is
+ * supplied directly.
+ *
+ * @throws {ShelfError} 404 when the customer is not in the organization.
+ */
+export async function assertCustomerBelongsToOrg(args: {
+  customerId: string;
+  organizationId: string;
+}) {
+  const customer = await db.customer.findFirst({
+    where: { id: args.customerId, organizationId: args.organizationId },
+    select: { id: true },
+  });
+
+  if (!customer) {
+    throw new ShelfError({
+      cause: null,
+      title: "Customer not found",
+      message: "This customer doesn't exist in your workspace.",
+      label,
+      status: 404,
+      additionalData: args,
+      shouldBeCaptured: true,
+    });
+  }
+}
+
 /** Get the OrgPricing row, or null if none exists yet. */
 export async function getOrgPricing(organizationId: string) {
   return db.orgPricing.findUnique({ where: { organizationId } });
@@ -46,7 +110,9 @@ export async function getAssetPricing(assetId: string) {
 export async function upsertOrgPricing(args: {
   organizationId: string;
   patch: {
-    storagePerDayCents?: number | null;
+    storageHalfPalletCents?: number | null;
+    storageStandardPalletCents?: number | null;
+    storageTallPalletCents?: number | null;
     pickCents?: number | null;
     returnCents?: number | null;
     rentalPerDayCents?: number | null;
@@ -85,7 +151,9 @@ export async function upsertCustomerPricing(args: {
   organizationId: string;
   customerId: string;
   patch: {
-    storagePerDayCents?: number | null;
+    storageHalfPalletCents?: number | null;
+    storageStandardPalletCents?: number | null;
+    storageTallPalletCents?: number | null;
     pickCents?: number | null;
     returnCents?: number | null;
     rentalPerDayCents?: number | null;
@@ -121,7 +189,6 @@ export async function upsertCustomerPricing(args: {
 export async function upsertAssetPricing(args: {
   assetId: string;
   patch: {
-    storagePerDayCents?: number | null;
     rentalPerDayCents?: number | null;
   };
 }) {

@@ -16,19 +16,47 @@
 
 import { createHash } from "node:crypto";
 
+import type { Prisma } from "@prisma/client";
+
 import { db } from "~/database/db.server";
 
 import type { RecordBillableEventArgs } from "./types";
 
 /**
+ * Minimum Prisma surface needed to write a billable event. Both the extended
+ * top-level client and a transaction client satisfy it, so callers can pass
+ * either. Typed structurally for the same reason as
+ * {@link RecordEventTxClient} in the activity-event module — the extended
+ * client isn't assignable to the generated `Prisma.TransactionClient`.
+ */
+export type BillableEventTxClient = {
+  billableEvent: {
+    upsert: (args: {
+      where: { idempotencyKey: string };
+      create: Prisma.BillableEventUncheckedCreateInput;
+      update: Record<string, never>;
+      select: { id: true };
+    }) => Promise<{ id: string }>;
+  };
+};
+
+/**
  * Inserts a `BillableEvent` row. Returns the existing event id if an
  * event with the same `idempotencyKey` already exists (no-op retry).
  *
- * The row starts in `status = PENDING`. The pg-boss worker drains it
- * asynchronously (see `queue.server.ts`).
+ * The row starts in `status = PENDING`, and is picked up by the monthly
+ * push to Productive.
+ *
+ * @param tx - Pass the surrounding transaction when the event is emitted
+ *   alongside a state change. Without it the charge commits even if the
+ *   mutation that justified it rolls back.
  */
-export async function recordBillableEvent(args: RecordBillableEventArgs) {
-  const result = await db.billableEvent.upsert({
+export async function recordBillableEvent(
+  args: RecordBillableEventArgs,
+  tx?: BillableEventTxClient
+) {
+  const client = tx ?? db;
+  const result = await client.billableEvent.upsert({
     where: { idempotencyKey: args.idempotencyKey },
     create: {
       organizationId: args.organizationId,
@@ -71,86 +99,209 @@ function key(parts: Array<string | number | null | undefined>): string {
 // ----------------------------------------------------------------------------
 
 /**
- * Records a single day's storage charge for one customer-owned asset.
- * Idempotency window: 1 row per (asset, billing day).
+ * Records one month's storage charge for one occupied pallet position.
+ *
+ * The billable unit is the slot, not the asset — a standard pallet holding
+ * fifty items is one charge. `assetId` is therefore normally null, and set
+ * only for OVERSIZE floor positions, which the rate card quotes per item and
+ * so bill once per asset in the area.
+ *
+ * Idempotency window: one row per (location, month), or per
+ * (location, asset, month) for per-item positions. Re-running the sweep for
+ * a month already billed is a no-op.
  */
-export async function recordStorageDay(args: {
+export async function recordStorageMonth(args: {
   organizationId: string;
   customerId: string;
-  assetId: string;
-  locationId: string | null;
-  /** Billing day (UTC midnight). */
-  day: Date;
+  locationId: string;
+  /** Set only for per-item (OVERSIZE) positions. */
+  assetId?: string | null;
+  /** First instant of the billing month (UTC midnight on the 1st). */
+  month: Date;
   amountCents?: number;
   currencyCode?: string;
 }) {
-  const dayIso = args.day.toISOString().slice(0, 10);
+  const monthIso = args.month.toISOString().slice(0, 7); // YYYY-MM
+  const periodEnd = new Date(
+    Date.UTC(
+      args.month.getUTCFullYear(),
+      args.month.getUTCMonth() + 1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ) - 1
+  );
+
   return recordBillableEvent({
     organizationId: args.organizationId,
     kind: "STORAGE",
     customerId: args.customerId,
-    assetId: args.assetId,
+    assetId: args.assetId ?? undefined,
     locationId: args.locationId,
     quantity: 1,
     amountCents: args.amountCents ?? null,
     currencyCode: args.currencyCode ?? null,
-    occurredAt: args.day,
-    periodStart: args.day,
-    periodEnd: new Date(args.day.getTime() + 24 * 60 * 60 * 1000 - 1),
-    idempotencyKey: key(["storage", args.assetId, dayIso]),
+    occurredAt: args.month,
+    periodStart: args.month,
+    periodEnd,
+    idempotencyKey: args.assetId
+      ? key(["storage", args.locationId, args.assetId, monthIso])
+      : key(["storage", args.locationId, monthIso]),
   });
 }
 
-/** Records a pick (asset checked out of storage). */
-export async function recordPick(args: {
+/**
+ * Arguments shared by the pick and return handling charges.
+ *
+ * Both are billed **per pallet, per shipment** — a position holding fifty
+ * cartons is one pick, not fifty. `locationId` is therefore the billable
+ * unit; `assetId` is only a representative member of that pallet, recorded
+ * so the ledger row can be traced back to something concrete.
+ */
+type HandlingChargeArgs = {
   organizationId: string;
   customerId: string;
-  assetId: string;
+  /** The booking this movement belongs to — part of the idempotency key. */
+  bookingId: string;
+  /** Pallet position being handled. Null when the asset isn't slotted. */
   locationId: string | null;
+  /** A representative asset on the pallet. */
+  assetId: string;
   occurredAt: Date;
   amountCents?: number;
   currencyCode?: string;
-}) {
-  return recordBillableEvent({
-    organizationId: args.organizationId,
-    kind: "PICK",
-    customerId: args.customerId,
-    assetId: args.assetId,
-    locationId: args.locationId,
-    quantity: 1,
-    amountCents: args.amountCents ?? null,
-    currencyCode: args.currencyCode ?? null,
-    occurredAt: args.occurredAt,
-    idempotencyKey: key(["pick", args.assetId, args.occurredAt.toISOString()]),
-  });
+};
+
+/**
+ * Builds the idempotency key for a handling charge.
+ *
+ * Keyed on (kind, booking, pallet) — deliberately NOT on a timestamp. The
+ * previous formula hashed `occurredAt` down to the millisecond, so every
+ * invocation produced a fresh key and the unique index never collapsed
+ * anything: a double-clicked "Check in" billed the customer twice. An
+ * unslotted asset falls back to its own id so two loose items on one booking
+ * still bill separately.
+ */
+function handlingKey(
+  kind: "pick" | "return",
+  args: Pick<HandlingChargeArgs, "bookingId" | "locationId" | "assetId">
+) {
+  return key([
+    kind,
+    args.bookingId,
+    args.locationId ?? `asset:${args.assetId}`,
+  ]);
 }
 
-/** Records a return (asset checked back into storage). */
-export async function recordReturn(args: {
-  organizationId: string;
+/** One billable pallet movement, collapsed from the assets sitting on it. */
+export type PalletUnit = {
   customerId: string;
-  assetId: string;
+  /** Pallet position. Null for an unslotted asset billed on its own. */
   locationId: string | null;
-  occurredAt: Date;
-  amountCents?: number;
-  currencyCode?: string;
-}) {
-  return recordBillableEvent({
-    organizationId: args.organizationId,
-    kind: "RETURN",
-    customerId: args.customerId,
-    assetId: args.assetId,
-    locationId: args.locationId,
-    quantity: 1,
-    amountCents: args.amountCents ?? null,
-    currencyCode: args.currencyCode ?? null,
-    occurredAt: args.occurredAt,
-    idempotencyKey: key([
-      "return",
-      args.assetId,
-      args.occurredAt.toISOString(),
-    ]),
-  });
+  /** Representative asset recorded on the ledger row. */
+  assetId: string;
+  /** How many assets this charge covers — for logging, not pricing. */
+  assetCount: number;
+};
+
+/**
+ * Collapses a booking's assets into the pallet positions they occupy, which
+ * is what handling is actually billed on.
+ *
+ * Fieldkit-owned assets (no `customerId`) are dropped — there is nobody to
+ * bill for moving our own rental stock. Assets sharing a position collapse to
+ * one unit; unslotted assets each stand alone, since without a position there
+ * is no pallet to group them onto.
+ *
+ * Shared by the pick and return paths so the two cannot drift apart and start
+ * billing different units for the same physical movement.
+ */
+export function groupAssetsIntoPallets(
+  assets: Array<{
+    id: string;
+    customerId: string | null;
+    locationId: string | null;
+  }>
+): PalletUnit[] {
+  const byPosition = new Map<string, PalletUnit>();
+
+  for (const asset of assets) {
+    if (!asset.customerId) continue;
+
+    // Key on the position, falling back to the asset itself when unslotted.
+    // Customer is part of the key so a position somehow holding two
+    // customers' goods bills each of them rather than silently merging.
+    const groupKey = asset.locationId
+      ? `${asset.customerId}:loc:${asset.locationId}`
+      : `${asset.customerId}:asset:${asset.id}`;
+
+    const existing = byPosition.get(groupKey);
+    if (existing) {
+      existing.assetCount += 1;
+      continue;
+    }
+
+    byPosition.set(groupKey, {
+      customerId: asset.customerId,
+      locationId: asset.locationId,
+      assetId: asset.id,
+      assetCount: 1,
+    });
+  }
+
+  return Array.from(byPosition.values());
+}
+
+/**
+ * Records a pick — a pallet pulled from storage and shipped out.
+ * One charge per (booking, pallet).
+ */
+export async function recordPick(
+  args: HandlingChargeArgs,
+  tx?: BillableEventTxClient
+) {
+  return recordBillableEvent(
+    {
+      organizationId: args.organizationId,
+      kind: "PICK",
+      customerId: args.customerId,
+      assetId: args.assetId,
+      locationId: args.locationId,
+      quantity: 1,
+      amountCents: args.amountCents ?? null,
+      currencyCode: args.currencyCode ?? null,
+      occurredAt: args.occurredAt,
+      idempotencyKey: handlingKey("pick", args),
+    },
+    tx
+  );
+}
+
+/**
+ * Records a return — a pallet received back and restocked into storage.
+ * One charge per (booking, pallet).
+ */
+export async function recordReturn(
+  args: HandlingChargeArgs,
+  tx?: BillableEventTxClient
+) {
+  return recordBillableEvent(
+    {
+      organizationId: args.organizationId,
+      kind: "RETURN",
+      customerId: args.customerId,
+      assetId: args.assetId,
+      locationId: args.locationId,
+      quantity: 1,
+      amountCents: args.amountCents ?? null,
+      currencyCode: args.currencyCode ?? null,
+      occurredAt: args.occurredAt,
+      idempotencyKey: handlingKey("return", args),
+    },
+    tx
+  );
 }
 
 /**
