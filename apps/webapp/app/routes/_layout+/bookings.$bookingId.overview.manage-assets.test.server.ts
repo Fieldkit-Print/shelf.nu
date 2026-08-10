@@ -117,6 +117,7 @@ describe("manage-assets route validation", () => {
     vi.mocked(rolesServer.requirePermission).mockResolvedValue({
       organizationId: "org123",
       isSelfServiceOrBase: false,
+      isStaff: true,
       isCustomer: false,
       customerId: null,
       customerContactPermission: null,

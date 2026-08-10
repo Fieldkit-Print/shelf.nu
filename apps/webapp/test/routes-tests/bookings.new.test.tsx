@@ -149,6 +149,7 @@ describe("bookings/new - custodian assignment", () => {
       organizationId: "org-1",
       role: OrganizationRoles.ADMIN,
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
 
     // Custodian not found due to org filter
@@ -189,6 +190,7 @@ describe("bookings/new - custodian assignment", () => {
       organizationId: "org-1",
       role: OrganizationRoles.ADMIN,
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
 
     // Valid team member from same org
@@ -230,6 +232,7 @@ describe("bookings/new - custodian assignment", () => {
       organizationId: "org-1",
       role: OrganizationRoles.ADMIN,
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
 
     mockGetTeamMember.mockResolvedValue({

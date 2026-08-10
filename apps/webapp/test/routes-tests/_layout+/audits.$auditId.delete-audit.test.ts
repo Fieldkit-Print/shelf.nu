@@ -99,6 +99,7 @@ describe("audits.$auditId action — delete-audit intent", () => {
     vi.mocked(requirePermission).mockResolvedValue({
       organizationId: "org-1",
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
     vi.mocked(deleteAuditSession).mockResolvedValue(undefined);
   });

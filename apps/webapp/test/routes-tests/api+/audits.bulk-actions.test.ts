@@ -142,6 +142,7 @@ describe("api/audits.bulk-actions action", () => {
     vi.mocked(requirePermission).mockResolvedValue({
       organizationId: "org-1",
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
     vi.mocked(bulkArchiveAudits).mockResolvedValue(undefined as any);
 
@@ -160,6 +161,7 @@ describe("api/audits.bulk-actions action", () => {
     vi.mocked(requirePermission).mockResolvedValue({
       organizationId: "org-1",
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
     vi.mocked(bulkArchiveAudits).mockResolvedValue(undefined as any);
 
@@ -216,6 +218,7 @@ describe("api/audits.bulk-actions action", () => {
     vi.mocked(requirePermission).mockResolvedValue({
       organizationId: "org-1",
       isSelfServiceOrBase: false,
+      isStaff: true,
     } as any);
     vi.mocked(bulkArchiveAudits).mockRejectedValue(
       new ShelfError({
@@ -264,6 +267,7 @@ describe("api/audits.bulk-actions action", () => {
       vi.mocked(requirePermission).mockResolvedValue({
         organizationId: "org-1",
         isSelfServiceOrBase: false,
+        isStaff: true,
       } as any);
       vi.mocked(bulkDeleteAudits).mockResolvedValue({ count: 1 } as any);
 
@@ -288,6 +292,7 @@ describe("api/audits.bulk-actions action", () => {
       vi.mocked(requirePermission).mockResolvedValue({
         organizationId: "org-1",
         isSelfServiceOrBase: false,
+        isStaff: true,
       } as any);
 
       const response = (await callAction(
@@ -308,6 +313,7 @@ describe("api/audits.bulk-actions action", () => {
       vi.mocked(requirePermission).mockResolvedValue({
         organizationId: "org-1",
         isSelfServiceOrBase: false,
+        isStaff: true,
       } as any);
       vi.mocked(bulkDeleteAudits).mockResolvedValue({ count: 3 } as any);
 
@@ -341,6 +347,7 @@ describe("api/audits.bulk-actions action", () => {
       vi.mocked(requirePermission).mockResolvedValue({
         organizationId: "org-1",
         isSelfServiceOrBase: false,
+        isStaff: true,
       } as any);
       vi.mocked(bulkDeleteAudits).mockResolvedValue({ count: 1 } as any);
 
@@ -364,6 +371,7 @@ describe("api/audits.bulk-actions action", () => {
       vi.mocked(requirePermission).mockResolvedValue({
         organizationId: "org-1",
         isSelfServiceOrBase: false,
+        isStaff: true,
       } as any);
       vi.mocked(bulkDeleteAudits).mockRejectedValue(
         new ShelfError({
