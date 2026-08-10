@@ -54,6 +54,43 @@ We have multiple user creation flows throughout the application (registration, i
 
 ---
 
+### `trigger_enforce_location_capacity`
+
+**Purpose**: Prevents more assets being placed into a location than it can hold.
+
+**Table**: `Asset`
+**Event**: `BEFORE INSERT OR UPDATE OF "locationId"`
+**Function**: `enforce_location_capacity()`
+
+**Migration File**: `20260809090000_pallet_slot_storage_model`
+
+**What it does**:
+
+- Reads `Location.capacity` for the location an asset is being placed into
+- Raises a `check_violation` when the location already holds that many assets
+- Skips the check entirely when `capacity` is `NULL` (unlimited), when the
+  asset has no location, or when an update leaves `locationId` unchanged
+
+**Why we use it**:
+Storage is billed per pallet position, so a rack slot must hold exactly one
+pallet — a second one logged into an occupied slot silently corrupts the
+month's charges and makes them unattributable. Assets are placed into
+locations from roughly ten code paths (asset create, asset update, bulk move,
+CSV import, kit location propagation, both mobile endpoints, the location
+scanner, and the manage-assets drawer). Guarding each call site individually
+would leave the enforcement one missed path away from failing, so the
+constraint lives in the database.
+
+Floor areas and organizational locations (warehouses, zones, staging) leave
+`capacity` null and are unaffected.
+
+**Note on error surfacing**: the trigger raises a Postgres exception, which
+reaches the user as a generic failure. Call sites that place assets
+interactively should also check capacity up front so the user gets a clear
+message; the trigger is the backstop, not the primary UX.
+
+---
+
 ## Adding New Triggers
 
 When adding new triggers to the project:

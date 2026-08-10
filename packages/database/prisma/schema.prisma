@@ -663,11 +663,58 @@ model Scan {
   @@index([userId])
 }
 
+/**
+ * Storage slot classification. Mirrors the "Monthly Storage Fees" rate card in
+ * Productive, which prices storage per pallet position per month.
+ *
+ * Also determines how a location is counted at billing time:
+ *   - The three pallet tiers are *positions*. One position = one charge,
+ *     however many assets sit on the pallet.
+ *   - OVERSIZE is quoted per item (rate card: "Quoted per item based on
+ *     dimensions and handling requirements"), so a floor area holding three
+ *     oversize crates bills three times.
+ *
+ * @see {@link Location.storageSlotTier}
+ */
+enum StorageSlotTier {
+  /// 48x40 footprint, under 2 ft tall.
+  HALF_PALLET
+  /// 48x40 footprint, up to 4 ft tall.
+  STANDARD_PALLET
+  /// 48x40 footprint, over 4 ft tall.
+  TALL_PALLET
+  /// Custom footprint / floor area. Priced per asset via
+  /// {@link Location.storageMonthlyCentsOverride}.
+  OVERSIZE
+}
+
 model Location {
   id          String  @id @default(cuid())
   name        String
   description String?
   address     String?
+
+  /// Storage classification. Non-null marks this location as billable
+  /// storage; null means it is organizational (a warehouse, a zone, a
+  /// staging area) and never generates a storage charge.
+  storageSlotTier StorageSlotTier?
+
+  /// Maximum number of assets this location may hold. Null = unlimited.
+  ///
+  /// Rack slots are created with `capacity = 1` so a second pallet cannot be
+  /// logged into an occupied position; floor areas leave it null. Enforced by
+  /// the `trigger_enforce_location_capacity` database trigger rather than at
+  /// each call site, because assets are placed into locations from ~10 code
+  /// paths (asset create, bulk move, CSV import, kit propagation, the mobile
+  /// endpoints and the location scanner).
+  ///
+  /// Capacity 1 also guarantees a billable pallet position can only ever hold
+  /// one customer's goods, which is what keeps storage charges attributable.
+  capacity Int?
+
+  /// Per-month price in cents for this specific slot, overriding the tier
+  /// rate. Required for OVERSIZE positions, which carry no standard rate.
+  storageMonthlyCentsOverride Int?
 
   // Cached geocoding coordinates
   latitude  Float?
@@ -1291,6 +1338,16 @@ model Booking {
   organization   Organization @relation(fields: [organizationId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   organizationId String
 
+  /// Customer this booking is on behalf of. Scalar reference to
+  /// {@link Customer.id} (no FK — mirrors Asset.customerId).
+  ///
+  /// Rental usage bills against this. It previously inferred the customer
+  /// from `creator.fieldkitCustomerId`, which only resolves when the booking
+  /// originated in the customer portal — so anything staff booked on a
+  /// customer's behalf silently billed nobody. Null means an internal
+  /// booking with nothing to charge.
+  customerId String?
+
   assets Asset[]
   /// Per-(booking, asset) quantity metadata. See {@link BookingAssetMeta}.
   /// Optional — only populated for CONSUMABLE assets or when explicit qty
@@ -1330,6 +1387,9 @@ model Booking {
   @@index([custodianTeamMemberId])
   @@index([custodianUserId])
   @@index([organizationId])
+  /// Rental-use billing sweeps active bookings for one org and needs the
+  /// customer to attribute the charge.
+  @@index([organizationId, customerId])
   // Speeds up status filtering when joining from Asset → Booking
   // (e.g. fetching ONGOING/OVERDUE bookings for asset custodian display)
   @@index([status])
@@ -2067,7 +2127,18 @@ model Customer {
   /// integrity is enforced at the service layer.
   organizationId String
 
-  /// Display name shown throughout the UI.
+  /// Productive company this customer mirrors. Productive is the system of
+  /// record for customer master data — rows here are created and refreshed by
+  /// the Productive sync, never authored in Shelf.
+  ///
+  /// Deliberately a nullable field rather than the primary key: making an
+  /// external id the PK is what made the Carbon exit a six-table rename.
+  /// Repointing at a different upstream should be a sync rewrite, not a
+  /// migration.
+  productiveCompanyId String? @unique
+
+  /// Display name shown throughout the UI. Synced from the Productive
+  /// company name.
   name String
 
   /// Primary billing email (invoices / notifications). Optional.
@@ -2082,7 +2153,11 @@ model Customer {
   requiresInternalApproval Boolean @default(false)
 
   /// Default ship-to address (used by shipstation export + booking requests).
+  /// `shipToPhone` exists because carriers reject consignee-phone-less freight
+  /// and most international labels; the shipstation exporter falls back to it
+  /// when a request carries no per-shipment phone.
   shipToName       String?
+  shipToPhone      String?
   shipToStreet1    String?
   shipToStreet2    String?
   shipToCity       String?
@@ -2350,6 +2425,15 @@ model BillableEvent {
   /// same day is a no-op.
   idempotencyKey String @unique
 
+  /// Productive service (budget line) this event was rolled into when pushed.
+  /// Null while `status = PENDING`. This is the guard against double-billing:
+  /// the monthly push skips any event that already carries a service id, so a
+  /// re-run after a partial failure resumes rather than re-charges.
+  ///
+  /// Replaces the Carbon-era `carbonInvoiceLineId`, which served the same
+  /// purpose and was dropped when the ERP integration was removed.
+  productiveServiceId String?
+
   lastPushAttemptedAt DateTime? @db.Timestamptz(3)
   lastPushError       String?
 
@@ -2388,11 +2472,18 @@ model OrgPricing {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   organizationId String       @id
 
-  /// Daily storage rate per customer-owned asset in storage. Minor units.
-  storagePerDayCents Int?
-  /// Flat charge per pick (asset checked out of storage / shipped).
+  /// Monthly rate per occupied pallet position, by slot tier. Minor units.
+  /// Mirrors the "Monthly Storage Fees" rate card in Productive.
+  /// OVERSIZE has no standard rate — it is quoted per slot via
+  /// {@link Location.storageMonthlyCentsOverride}.
+  storageHalfPalletCents     Int?
+  storageStandardPalletCents Int?
+  storageTallPalletCents     Int?
+
+  /// Flat charge per pick. Billed per *pallet* per outbound shipment, not per
+  /// asset — a pallet holding fifty items is one pick.
   pickCents Int?
-  /// Flat charge per return (asset returned to storage).
+  /// Flat charge per return. Billed per pallet per return shipment.
   returnCents Int?
   /// Daily rental rate for Fieldkit-owned rentable assets.
   rentalPerDayCents Int?
@@ -2419,7 +2510,12 @@ model CustomerPricing {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   organizationId String
 
-  storagePerDayCents Int?
+  /// Per-customer overrides of the org tier rates. Null falls through to
+  /// OrgPricing.
+  storageHalfPalletCents     Int?
+  storageStandardPalletCents Int?
+  storageTallPalletCents     Int?
+
   pickCents          Int?
   returnCents        Int?
   rentalPerDayCents  Int?
@@ -2443,8 +2539,9 @@ model AssetPricing {
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
-  storagePerDayCents Int?
-  rentalPerDayCents  Int?
+  /// Per-asset rental override. Storage has no per-asset tier: it is priced
+  /// by the pallet position the asset occupies, via Location.
+  rentalPerDayCents Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

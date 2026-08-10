@@ -9,6 +9,7 @@ import { fileErrorAtom, defaultValidateFileAtom } from "~/atoms/file";
 import { useAutoFocus } from "~/hooks/use-auto-focus";
 import { useDisabled } from "~/hooks/use-disabled";
 import useFetcherWithReset from "~/hooks/use-fetcher-with-reset";
+import { centsToDollars, moneyDollarsSchema } from "~/modules/pricing/format";
 import type { action as editLocationAction } from "~/routes/_layout+/locations.$locationId_.edit";
 import type { action as newLocationAction } from "~/routes/_layout+/locations.new";
 import { ACCEPT_SUPPORTED_IMAGES } from "~/utils/constants";
@@ -40,6 +41,47 @@ export const NewLocationFormSchema = z.object({
     .string()
     .optional()
     .transform((value) => (value ? value : null)),
+
+  /**
+   * Storage classification. Blank means this is an organizational location —
+   * a warehouse, a zone, a staging area — which never generates a storage
+   * charge. Setting a tier makes it a billable position.
+   */
+  storageSlotTier: z
+    .enum(["", "HALF_PALLET", "STANDARD_PALLET", "TALL_PALLET", "OVERSIZE"])
+    .optional()
+    .transform((value) => (value ? value : null)),
+
+  /**
+   * Maximum assets this location may hold. Blank means unlimited. A rack slot
+   * should be 1 so a second pallet cannot be logged into an occupied
+   * position — enforced by a database trigger, not just here.
+   */
+  capacity: z
+    .string()
+    .optional()
+    .refine(
+      (value) => {
+        const trimmed = value?.trim();
+        if (!trimmed) return true;
+        const num = Number(trimmed);
+        return Number.isInteger(num) && num >= 1;
+      },
+      {
+        message:
+          "Enter a whole number of 1 or more, or leave blank for no limit",
+      }
+    )
+    .transform((value) => {
+      const trimmed = value?.trim();
+      return trimmed ? Number(trimmed) : null;
+    }),
+
+  /**
+   * Per-month price for this specific position, in dollars. Overrides the
+   * tier rate. Required for OVERSIZE, which has no standard rate.
+   */
+  storageMonthlyOverrideDollars: moneyDollarsSchema,
   addAnother: z
     .string()
     .optional()
@@ -67,6 +109,12 @@ interface Props {
   parentId?: Location["parentId"];
   referer?: string | null;
   excludeLocationId?: Location["id"];
+  /** Storage classification of this position. Null = not billable storage. */
+  storageSlotTier?: Location["storageSlotTier"];
+  /** Max assets this position may hold. Null = unlimited. */
+  capacity?: Location["capacity"];
+  /** Per-slot monthly price override, in cents. */
+  storageMonthlyCentsOverride?: Location["storageMonthlyCentsOverride"];
 }
 
 // react-doctor:no-giant-component — deferred for follow-up refactor
@@ -81,6 +129,9 @@ export const LocationForm = ({
   referer,
   excludeLocationId,
   onCancel,
+  storageSlotTier,
+  capacity,
+  storageMonthlyCentsOverride,
 }: Props) => {
   const zo = useZorm("NewQuestionWizardScreen", NewLocationFormSchema);
   const fetcher = useFetcherWithReset<{
@@ -368,6 +419,102 @@ export const LocationForm = ({
               NewLocationFormSchema.shape.description
             )}
           />
+        </When>
+
+        {/*
+          Storage billing. Only rendered on the full-page form — the inline
+          dialog variant (hasOnSuccessFunc) is a quick-create used from asset
+          screens, where slot classification would be noise.
+        */}
+        <When truthy={!hasOnSuccessFunc}>
+          <FormRow
+            rowLabel="Storage billing"
+            subHeading={
+              <p>
+                Set a slot type to make this a billable pallet position. Leave
+                it blank for warehouses, zones, and staging areas — those never
+                generate a storage charge.
+              </p>
+            }
+          >
+            <div className="flex w-full flex-col gap-4">
+              <div>
+                <label
+                  htmlFor="storageSlotTier"
+                  className="mb-1 block text-[14px] font-medium text-gray-700"
+                >
+                  Slot type
+                </label>
+                <select
+                  id="storageSlotTier"
+                  name={zo.fields.storageSlotTier()}
+                  disabled={disabled}
+                  defaultValue={storageSlotTier ?? ""}
+                  className="w-full rounded-md border border-gray-300 px-3.5 py-2.5 text-[16px] text-gray-900 focus:border-primary-300 focus:ring focus:ring-primary-100 md:text-[14px]"
+                  aria-describedby="storageSlotTier-hint"
+                >
+                  <option value="">Not billable storage</option>
+                  <option value="HALF_PALLET">
+                    Half pallet — 48×40, under 2 ft
+                  </option>
+                  <option value="STANDARD_PALLET">
+                    Standard pallet — 48×40, up to 4 ft
+                  </option>
+                  <option value="TALL_PALLET">
+                    Tall pallet — 48×40, over 4 ft
+                  </option>
+                  <option value="OVERSIZE">
+                    Oversize / custom footprint — priced per slot
+                  </option>
+                </select>
+                <p
+                  id="storageSlotTier-hint"
+                  className="mt-1 text-xs text-gray-500"
+                >
+                  Pallet positions bill once per month however many items sit on
+                  them. Oversize bills per item in the area.
+                </p>
+              </div>
+
+              <div>
+                <Input
+                  label="Capacity"
+                  type="number"
+                  min="1"
+                  step="1"
+                  name={zo.fields.capacity()}
+                  disabled={disabled}
+                  defaultValue={capacity ?? ""}
+                  placeholder="Leave blank for no limit"
+                  error={zo.errors.capacity()?.message}
+                  className="w-full"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Set 1 for a rack slot so a second pallet can&apos;t be logged
+                  into it by mistake. Leave blank for floor areas.
+                </p>
+              </div>
+
+              <div>
+                <Input
+                  label="Monthly price override ($)"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  name={zo.fields.storageMonthlyOverrideDollars()}
+                  disabled={disabled}
+                  defaultValue={centsToDollars(storageMonthlyCentsOverride)}
+                  placeholder="Leave blank to use the standard rate"
+                  error={zo.errors.storageMonthlyOverrideDollars()?.message}
+                  className="w-full"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Overrides the tier rate for this position. Required for
+                  oversize slots, which have no standard rate.
+                </p>
+              </div>
+            </div>
+          </FormRow>
         </When>
 
         {hasOnSuccessFunc ? (

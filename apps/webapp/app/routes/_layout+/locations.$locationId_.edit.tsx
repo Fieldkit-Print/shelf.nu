@@ -20,6 +20,7 @@ import {
   updateLocation,
   updateLocationImage,
 } from "~/modules/location/service.server";
+import { dollarsToCents } from "~/modules/pricing/format";
 import { appendToMetaTitle } from "~/utils/append-to-meta-title";
 import { sendNotification } from "~/utils/emitter/send-notification.server";
 import { makeShelfError } from "~/utils/error";
@@ -127,7 +128,15 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
       }
     );
 
-    const { name, description, address, parentId } = parsedData;
+    const {
+      name,
+      description,
+      address,
+      parentId,
+      storageSlotTier,
+      capacity,
+      storageMonthlyOverrideDollars,
+    } = parsedData;
 
     const location = await updateLocation({
       id,
@@ -137,6 +146,11 @@ export async function action({ context, request, params }: ActionFunctionArgs) {
       address,
       organizationId,
       parentId,
+      storageSlotTier,
+      capacity,
+      storageMonthlyCentsOverride: dollarsToCents(
+        storageMonthlyOverrideDollars
+      ),
     });
 
     await updateLocationImage({
@@ -188,6 +202,9 @@ export default function LocationEditPage() {
           parentId={location.parentId}
           referer={referer}
           excludeLocationId={location.id}
+          storageSlotTier={location.storageSlotTier}
+          capacity={location.capacity}
+          storageMonthlyCentsOverride={location.storageMonthlyCentsOverride}
         />
       </div>
     </div>
