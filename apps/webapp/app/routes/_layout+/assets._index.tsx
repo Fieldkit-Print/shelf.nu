@@ -345,35 +345,52 @@ export default function AssetIndexPage() {
   const { canImportAssets } = useLoaderData<typeof loader>();
   const { modeIsAdvanced } = useAssetIndexViewState();
 
+  /**
+   * Import and create are distinct permissions — a role can hold one without
+   * the other. Gating both on `create` (as this header previously did) hides
+   * Import from roles that are allowed to use it.
+   */
+  const canCreateAssets = userHasPermission({
+    roles,
+    entity: PermissionEntity.asset,
+    action: PermissionAction.create,
+  });
+  const canImport = userHasPermission({
+    roles,
+    entity: PermissionEntity.asset,
+    action: PermissionAction.import,
+  });
+
   return (
     <div className="relative">
       <Header hidePageDescription={modeIsAdvanced}>
-        <When
-          truthy={userHasPermission({
-            roles,
-            entity: PermissionEntity.asset,
-            action: PermissionAction.create,
-          })}
-        >
-          <>
-            <ImportButton canImportAssets={canImportAssets} />
-            <Button
-              to="new"
-              role="link"
-              aria-label={`new asset`}
-              data-test-id="createNewAsset"
-            >
-              New asset
-            </Button>
-          </>
+        <When truthy={canImport}>
+          <ImportButton canImportAssets={canImportAssets} />
+        </When>
+        <When truthy={canCreateAssets}>
+          <Button
+            to="new"
+            role="link"
+            aria-label={`new asset`}
+            data-test-id="createNewAsset"
+          >
+            New asset
+          </Button>
         </When>
       </Header>
       <AssetsList
         customEmptyStateContent={{
           title: "No assets yet",
           text: "Assets are the core of your inventory. Create your first asset to start tracking equipment, devices, or anything your team manages.",
-          newButtonRoute: "/assets/new",
-          newButtonContent: "Create your first asset",
+          // Only offer the CTA to roles that can act on it — the empty state
+          // renders the button whenever a route is supplied, so withholding
+          // the route is what hides it.
+          ...(canCreateAssets
+            ? {
+                newButtonRoute: "/assets/new",
+                newButtonContent: "Create your first asset",
+              }
+            : {}),
         }}
       />
     </div>
